@@ -1,108 +1,134 @@
 import os
 import numpy as np
 import pandas as pd
-import nrrd
-import matplotlib
+import nrrd  # pip install pynrrd
 
-matplotlib.use('TkAgg')  # Interaktív ablak beállítása
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
-from skimage.measure import marching_cubes
-
-# --- 1. VÁLTOZÓK ÉS FÁJLOK ---
+# === BEÁLLÍTÁSOK ===
 alap_mappa_utvonal = '/home/bibi/Documents/koki/swc_in_ccf/data_v2/'
 szotar_fajl = '/home/bibi/Documents/koki/query.csv'
 atlas_fajl = '/home/bibi/Documents/koki/annotation_25.nrrd'
 
-# Célterületek ID-jai
-target_gpe_id = 1022
-target_rt_id = 262
+# Célterületek ID-jai (Allen atlasból kinézve)
+target_gpe_id = 1022  # Globus Pallidus external segment
+target_rt_id = 262    # Reticular nucleus of the thalamus (TRN)
 
 # Vizsgált sejt megadása
 eger_mappa = '221227'
 sejt_fajl = '241.swc'
 voxel_size = 25
 
+# === SZÓTÁR ÉS ATLASZ BETÖLTÉSE ===
 print('Szótár és Atlasz betöltése...')
 
-opts = {'usecols': ['id', 'acronym', 'safe_name']}
-szotar = pd.read_csv(szotar_fajl, **opts)
+szotar = pd.read_csv(szotar_fajl, usecols=['id', 'acronym', 'safe_name'])
 
-# Python pynrrd modulja alapból ugyanabban a formátumban olvassa be a mátrixot, mint a MATLAB
 atlas_matrix, _ = nrrd.read(atlas_fajl)
 max_x, max_y, max_z = atlas_matrix.shape
 
+# === SWC FÁJL BETÖLTÉSE ===
 filename = os.path.join(alap_mappa_utvonal, eger_mappa, sejt_fajl)
 if not os.path.isfile(filename):
     raise FileNotFoundError(f'Hiba! Nem található a fájl: {filename}')
+
 print(f'Fájl betöltve: {eger_mappa} / {sejt_fajl}')
 
-# --- 2. SWC BEOLVASÁSA ÉS TISZTÍTÁSA ---
-swc = pd.read_csv(filename, sep=r'\s+', comment='#', header=None,
-                  names=['id', 'type', 'x', 'y', 'z', 'radius', 'pid'])
-swc = swc.dropna(subset=['id', 'type', 'x', 'y', 'z', 'pid'])
+# Beolvassa az SWC fájlt, kihagyva a #-es komment sorokat
+swc = pd.read_csv(filename, sep=r'\s+', comment='#', header=None).values
 
-id_arr = np.round(swc['id'].values).astype(int)
-type_arr = np.round(swc['type'].values).astype(int)
-x = swc['x'].values
-y = swc['y'].values
-z = swc['z'].values
-pid_arr = np.round(swc['pid'].values).astype(int)
+# SWC mátrix szétszedése adatok szerint
+id_   = np.round(swc[:, 0]).astype(float)
+type_ = np.round(swc[:, 1]).astype(float)
+x     = swc[:, 2].astype(float)
+y     = swc[:, 3].astype(float)
+z     = swc[:, 4].astype(float)
+pid   = np.round(swc[:, 6]).astype(float)
 
-# Ismétlődések kiszedése (a MATLAB 'last' paraméterével megegyezően)
-_, unq_idx = np.unique(id_arr[::-1], return_index=True)
-unq_idx = len(id_arr) - 1 - unq_idx
-id_arr, type_arr = id_arr[unq_idx], type_arr[unq_idx]
-x, y, z, pid_arr = x[unq_idx], y[unq_idx], z[unq_idx], pid_arr[unq_idx]
+# NaN adatok kiszűrése
+valid_rows = (~np.isnan(id_) & ~np.isnan(x) & ~np.isnan(y) &
+              ~np.isnan(z) & ~np.isnan(pid))
+id_   = id_[valid_rows].astype(int)
+type_ = type_[valid_rows].astype(int)
+x     = x[valid_rows]
+y     = y[valid_rows]
+z     = z[valid_rows]
+pid   = pid[valid_rows].astype(int)
 
-# --- 3. KOORDINÁTÁK ÉS RÉGIÓK ---
+# Ismétlődések kiszűrése (utolsó előfordulást tartja meg, mint MATLAB 'last')
+_, unq_idx = np.unique(id_[::-1], return_index=True)
+unq_idx = len(id_) - 1 - unq_idx  # visszafordítás az eredeti indexekre
+unq_idx = np.sort(unq_idx)
+
+id_   = id_[unq_idx]
+type_ = type_[unq_idx]
+x     = x[unq_idx]
+y     = y[unq_idx]
+z     = z[unq_idx]
+pid   = pid[unq_idx]
+
+# Koordináták átkonvertálása az egéragy voxel-koordinátáira
 vox_x = np.clip(np.round(x / voxel_size).astype(int), 0, max_x - 1)
 vox_y = np.clip(np.round(y / voxel_size).astype(int), 0, max_y - 1)
 vox_z = np.clip(np.round(z / voxel_size).astype(int), 0, max_z - 1)
 
-# MATLAB sub2ind megfelelője: közvetlen 3D indexelés
+# (+1 MATLAB-ban 1-indexelt volt; Pythonban 0-indexelt, ezért nincs +1)
+# A clip már 0-tól max-1-ig határol, ez ekvivalens a MATLAB min(max(...,1),max_x) logikával
+
+# Atlas régió lekérdezése minden pontra
 point_regions = atlas_matrix[vox_x, vox_y, vox_z]
 
-soma_indices = np.where(type_arr == 1)[0]
-soma_idx = soma_indices[0] if len(soma_indices) > 0 else None
+# Soma megkeresése (első type==1 pont)
+soma_candidates = np.where(type_ == 1)[0]
+soma_idx = soma_candidates[0]
 
-soma_region_id = point_regions[soma_idx] if soma_idx is not None else -1
-soma_match = szotar[szotar['id'] == soma_region_id]
-soma_name = soma_match['safe_name'].values[0] if not soma_match.empty else "Ismeretlen régió"
+soma_region_id = point_regions[soma_idx]
+soma_rows = szotar[szotar['id'] == soma_region_id]['safe_name']
+soma_name = soma_rows.values[0] if len(soma_rows) > 0 else 'Ismeretlen régió'
 
-# --- 4. SZÁMOLÁSOK ÉS EREDMÉNYEK KIÍRÁSA ---
-print('\n========================================================')
+print()
+print('========================================================')
 print(' EREDMÉNYEK:')
 print('========================================================')
 print('1. SOMA LOKÁCIÓJA:')
 print(f'   Régió neve: {soma_name} (ID: {soma_region_id})\n')
 
-id_to_index = {val: idx for idx, val in enumerate(id_arr)}
-parent_row_indices = np.array([id_to_index.get(p, -1) for p in pid_arr])
-valid_connections = (parent_row_indices != -1) & (pid_arr != -1)
+# === AXON ELEMZÉS ===
+# ID -> sor-index szótár a gyors kereséshez
+id_to_row = {v: i for i, v in enumerate(id_)}
+
+# Szülő-gyerek kapcsolatok meghatározása
+parent_row_indices = np.array([id_to_row.get(p, -1) for p in pid])
+found_parent = parent_row_indices >= 0
+valid_connections = found_parent & (pid != -1)
 
 p_rows = parent_row_indices[valid_connections]
-child_counts = np.bincount(p_rows, minlength=len(id_arr))
 
-is_axon = (type_arr == 2) | (type_arr == 0)
-ep_idx = np.where((child_counts == 0) & is_axon)[0]
-branch_idx = np.where((child_counts > 1) & is_axon)[0]
-proj_idx = np.union1d(ep_idx, branch_idx)
+# Gyerekszámok accumarray-szerű számítása
+child_counts = np.bincount(p_rows, minlength=len(id_))
+
+# Axon maszk (type==2 vagy type==0)
+is_axon = (type_ == 2) | (type_ == 0)
+
+# Végpontok és elágazások
+ep_idx     = np.where((child_counts == 0) & is_axon)[0]
+branch_idx = np.where((child_counts > 1)  & is_axon)[0]
+proj_idx   = np.union1d(ep_idx, branch_idx)
+
 proj_regions = point_regions[proj_idx]
 
+# Axonhossz számítása (Pitagorasz)
 curr_idx = np.where(valid_connections)[0]
-p_idx = parent_row_indices[curr_idx]
+p_idx    = parent_row_indices[valid_connections]
 
 dx = x[curr_idx] - x[p_idx]
 dy = y[curr_idx] - y[p_idx]
 dz = z[curr_idx] - z[p_idx]
-d = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+d  = np.sqrt(dx**2 + dy**2 + dz**2)
 
-axon_mask = (type_arr[curr_idx] == 2) | (type_arr[curr_idx] == 0)
+axon_mask = (type_[curr_idx] == 2) | (type_[curr_idx] == 0)
 
-# GPe
+# === GPe VETÍTÉS ===
 proj_in_gpe = np.sum(proj_regions == target_gpe_id)
-len_gpe = np.sum(d[axon_mask & (point_regions[curr_idx] == target_gpe_id)])
+len_gpe     = np.sum(d[axon_mask & (point_regions[curr_idx] == target_gpe_id)])
 
 print('2. VETÍT-E A GPe-BE (Globus Pallidus external segment)?')
 if proj_in_gpe > 0:
@@ -112,9 +138,9 @@ if proj_in_gpe > 0:
 else:
     print('   NEM. (Csak áthalad, vagy nincs ott axon)\n')
 
-# RT
+# === RT VETÍTÉS ===
 proj_in_rt = np.sum(proj_regions == target_rt_id)
-len_rt = np.sum(d[axon_mask & (point_regions[curr_idx] == target_rt_id)])
+len_rt     = np.sum(d[axon_mask & (point_regions[curr_idx] == target_rt_id)])
 
 print('3. VETÍT-E AZ RT-BE (Reticular nucleus of the thalamus)?')
 if proj_in_rt > 0:
@@ -124,96 +150,20 @@ if proj_in_rt > 0:
 else:
     print('   NEM. (Csak áthalad, vagy nincs ott axon)\n')
 
-# Egyéb célterületek
+# === EGYÉB CÉLTERÜLETEK ===
 unique_proj_regions = np.unique(proj_regions[proj_regions > 0])
-other_targets = [r for r in unique_proj_regions if r not in (target_gpe_id, target_rt_id, soma_region_id)]
+other_targets = unique_proj_regions[
+    (unique_proj_regions != target_gpe_id) &
+    (unique_proj_regions != target_rt_id) &
+    (unique_proj_regions != soma_region_id)
+]
 
 print('4. EGYÉB CÉLTERÜLETEK (Ahol van végpont/elágazás):')
 if len(other_targets) == 0:
-    print('   Nincs más célterület.\n')
+    print('   Nincs más célterület.')
 else:
     for r_id in other_targets:
-        match = szotar[szotar['id'] == r_id]
-        r_name = match['safe_name'].values[0] if not match.empty else "Ismeretlen"
+        r_rows = szotar[szotar['id'] == r_id]['safe_name']
+        r_name = r_rows.values[0] if len(r_rows) > 0 else 'Ismeretlen'
         pts_here = np.sum(proj_regions == r_id)
         print(f'   - {r_name} (Pontok: {pts_here} db)')
-print('========================================================')
-
-# --- 5. 3D ÁBRA GENERÁLÁSA ---
-print('3D ábra generálása...')
-fig = plt.figure(figsize=(10, 8), facecolor='w')  # Fehér háttér, ahogy a MATLAB kódban: figure('Color', 'w')
-ax = fig.add_subplot(111, projection='3d', facecolor='w')
-
-# Valódi szagitális nézet az X-Y síkon (MATLAB: view(2), YDir reverse)
-ax.view_init(elev=90, azim=-90)
-ax.invert_yaxis()
-
-ax.set_xlabel('X (\u03bcm) - Orr balra, Farok jobbra')
-ax.set_ylabel('Y (\u03bcm) - Hát felül, Has alul')
-ax.set_zlabel('Z (\u03bcm) - Bal/Jobb agyfélteke (mélység)')
-ax.set_title(f'Sejt: {eger_mappa} / {sejt_fajl}\nSoma: {soma_name}')
-
-
-# Segédfüggvény patch/isosurface generáláshoz
-def plot_region(target_id, color):
-    mask = (atlas_matrix == target_id)
-    if np.any(mask):
-        verts, faces, normals, values = marching_cubes(mask, level=0.5)
-        verts = verts * voxel_size  # Nem forgatunk meg semmit, tisztán a beolvasott adatot szorozzuk
-        mesh = Poly3DCollection(verts[faces], alpha=0.2)
-        mesh.set_facecolor(color)
-        mesh.set_edgecolor('none')
-        ax.add_collection3d(mesh)
-
-
-# Régiók rajzolása (Soma piros, GPe kék, RT zöld)
-plot_region(soma_region_id, [1.0, 0.2, 0.2])
-plot_region(target_gpe_id, [0.2, 0.5, 1.0])
-plot_region(target_rt_id, [0.2, 0.8, 0.2])
-
-# Axonok rajzolása (KIZÁRÓLAG a GPe és RT területeken belül, ahogy a MATLAB kód írja)
-segments = []
-colors = []
-for i in range(len(id_arr)):
-    if valid_connections[i] and type_arr[i] in (2, 0):
-        p_row = parent_row_indices[i]
-        reg = point_regions[i]
-
-        if reg == target_gpe_id:
-            segments.append([[x[i], y[i], z[i]], [x[p_row], y[p_row], z[p_row]]])
-            colors.append([0, 0, 1])  # Kék
-        elif reg == target_rt_id:
-            segments.append([[x[i], y[i], z[i]], [x[p_row], y[p_row], z[p_row]]])
-            colors.append([0, 0.8, 0])  # Zöld
-
-if segments:
-    # Sokkal gyorsabb kirajzolás, mint a for ciklus plot3-mal
-    lc = Line3DCollection(segments, colors=colors, linewidths=1.5)
-    ax.add_collection3d(lc)
-
-# Pöttyök (Soma, és vetítési végpontok)
-if soma_idx is not None:
-    ax.scatter(x[soma_idx], y[soma_idx], z[soma_idx], s=100, c='k', edgecolors='w', zorder=5)
-
-gpe_pts = proj_idx[point_regions[proj_idx] == target_gpe_id]
-if len(gpe_pts) > 0:
-    ax.scatter(x[gpe_pts], y[gpe_pts], z[gpe_pts], s=40, c='b', edgecolors='w', zorder=5)
-
-rt_pts = proj_idx[point_regions[proj_idx] == target_rt_id]
-if len(rt_pts) > 0:
-    ax.scatter(x[rt_pts], y[rt_pts], z[rt_pts], s=40, c='g', edgecolors='w', zorder=5)
-
-# MATLAB "axis equal" megfelelője (méretarányos tér)
-try:
-    ax.set_box_aspect([1, 1, 1])
-except AttributeError:
-    pass
-
-# Automatikus dobozméretezés a sejt kiterjedése alapján
-if len(x) > 0:
-    ax.set_xlim([np.min(x) - 500, np.max(x) + 500])
-    ax.set_ylim([np.min(y) - 500, np.max(y) + 500])
-    ax.set_zlim([np.min(z) - 500, np.max(z) + 500])
-
-plt.show()
-print('Kész!')

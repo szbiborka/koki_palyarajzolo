@@ -18,7 +18,7 @@ from core.loader import (
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria
 )
-from core.visualization import build_3d_plot, show_plot_local
+from core.visualization import build_3d_plot, build_3d_plot_multi, show_plot_local
 
 # =============================================================================
 # OLDAL KONFIGURÁCIÓ
@@ -32,84 +32,111 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    :root {
+        --cream: #F4F5EE;
+        --sage-tint: #E9ECDD;
+        --border-sage: #CFD6BC;
+        --sage-light: #9DAE89;
+        --sage: #5F7350;
+        --sage-deep: #33401F;
+        --rosewood-tint: #F3E2E0;
+        --rosewood-light: #C98F8B;
+        --rosewood: #7A3B3B;
+        --rosewood-deep: #4A2020;
+        --taupe: #8C8775;
+        --taupe-tint: #EFEDE6;
+        --taupe-deep: #56523F;
+    }
+
     html, body, [class*="css"] {
         font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
     }
+
+    /* Page + sidebar background: warm cream with a sage-tinted sidebar,
+       like a pressed-leaf notebook page. */
+    .stApp { background-color: var(--cream); }
+    [data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child {
+        background-color: var(--sage-tint);
+    }
+
     .sidebar-title {
         font-size: 1.1rem;
         font-weight: 700;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-        color: #1a1a2e;
+        color: var(--sage-deep);
         margin-bottom: 0.1rem;
     }
     .sidebar-subtitle {
         font-size: 0.78rem;
-        color: #666;
+        color: var(--rosewood);
         letter-spacing: 0.06em;
         text-transform: uppercase;
         margin-bottom: 1rem;
     }
+
     .result-card {
-        background: #f8f9fb;
-        border: 1px solid #e0e4ec;
-        border-left: 3px solid #2d6a9f;
+        background: var(--cream);
+        border: 1px solid var(--border-sage);
+        border-left: 3px solid var(--sage);
         border-radius: 4px;
         padding: 0.9rem 1.1rem;
         margin-bottom: 0.6rem;
     }
-    .result-card.positive { border-left-color: #2a7f4f; }
-    .result-card.negative { border-left-color: #b0b0b0; }
+    .result-card.positive { border-left-color: var(--sage); }
+    .result-card.negative { border-left-color: var(--taupe); }
     .result-card.filtered-out {
-        border-left-color: #c0392b;
-        background: #fff8f8;
+        border-left-color: var(--rosewood-deep);
+        background: var(--rosewood-tint);
     }
     .result-card h4 {
         margin: 0 0 0.4rem 0;
         font-size: 0.95rem;
         font-weight: 600;
-        color: #1a1a2e;
+        color: var(--sage-deep);
     }
-    .result-card .meta { font-size: 0.82rem; color: #555; }
+    .result-card .meta { font-size: 0.82rem; color: var(--taupe-deep); }
+
     .tag-yes {
         display: inline-block;
-        background: #e6f4ee;
-        color: #1e6b3e;
+        background: var(--sage-tint);
+        color: var(--sage-deep);
         font-size: 0.72rem;
         font-weight: 600;
         letter-spacing: 0.05em;
-        padding: 0.15rem 0.5rem;
-        border-radius: 3px;
+        padding: 0.15rem 0.6rem;
+        border-radius: 10px;
         text-transform: uppercase;
         margin-right: 0.5rem;
     }
     .tag-no {
         display: inline-block;
-        background: #f0f0f0;
-        color: #888;
+        background: var(--taupe-tint);
+        color: var(--taupe-deep);
         font-size: 0.72rem;
         font-weight: 600;
         letter-spacing: 0.05em;
-        padding: 0.15rem 0.5rem;
-        border-radius: 3px;
+        padding: 0.15rem 0.6rem;
+        border-radius: 10px;
         text-transform: uppercase;
         margin-right: 0.5rem;
     }
     .tag-filtered {
         display: inline-block;
-        background: #fdecea;
-        color: #c0392b;
+        background: var(--rosewood-tint);
+        color: var(--rosewood-deep);
         font-size: 0.72rem;
         font-weight: 600;
         letter-spacing: 0.05em;
-        padding: 0.15rem 0.5rem;
-        border-radius: 3px;
+        padding: 0.15rem 0.6rem;
+        border-radius: 10px;
         text-transform: uppercase;
         margin-right: 0.5rem;
     }
+
     .filter-box {
-        background: #f0f4fa;
-        border: 1px solid #c8d4e8;
+        background: var(--sage-tint);
+        border: 1px solid var(--border-sage);
         border-radius: 4px;
         padding: 0.8rem 1rem;
         margin-bottom: 0.5rem;
@@ -118,10 +145,13 @@ st.markdown("""
         margin: 0 0 0.5rem 0;
         font-size: 0.85rem;
         font-weight: 600;
-        color: #1a1a2e;
+        color: var(--sage-deep);
     }
+
+    /* Page header: a dashed rule stands in for a myelinated axon segment,
+       with the gaps echoing the Nodes of Ranvier. */
     .page-header {
-        border-bottom: 2px solid #1a1a2e;
+        border-bottom: 3px dashed var(--rosewood-light);
         padding-bottom: 0.5rem;
         margin-bottom: 1.5rem;
     }
@@ -129,27 +159,88 @@ st.markdown("""
         font-size: 1.6rem;
         font-weight: 700;
         letter-spacing: 0.02em;
-        color: #1a1a2e;
+        color: var(--sage-deep);
         margin: 0;
     }
     .page-header p {
         font-size: 0.85rem;
-        color: #555;
+        color: var(--rosewood);
         margin: 0.2rem 0 0 0;
     }
+
     [data-testid="metric-container"] {
-        background: #f8f9fb;
-        border: 1px solid #e0e4ec;
+        background: var(--cream);
+        border: 1px solid var(--border-sage);
         border-radius: 4px;
         padding: 0.7rem 1rem;
     }
-    hr { border: none; border-top: 1px solid #e0e4ec; margin: 1.2rem 0; }
-    [data-testid="stDataFrame"] { border: 1px solid #e0e4ec; border-radius: 4px; }
-    .stButton > button { border-radius: 3px; font-weight: 600; letter-spacing: 0.03em; }
+
+    /* Same dashed-axon motif for every divider in the app. */
+    hr { border: none; border-top: 3px dashed var(--sage-light); margin: 1.2rem 0; opacity: 0.9; }
+
+    [data-testid="stDataFrame"] { border: 1px solid var(--border-sage); border-radius: 4px; }
+
+    .stButton > button { border-radius: 14px; font-weight: 600; letter-spacing: 0.03em; }
+    [data-testid="baseButton-primary"] {
+        background-color: var(--rosewood) !important;
+        border-color: var(--rosewood) !important;
+        color: var(--cream) !important;
+    }
+    [data-testid="baseButton-primary"]:hover {
+        background-color: var(--rosewood-deep) !important;
+        border-color: var(--rosewood-deep) !important;
+    }
+    [data-testid="baseButton-secondary"] {
+        border-color: var(--sage) !important;
+        color: var(--sage-deep) !important;
+    }
+    [data-testid="baseButton-secondary"]:hover {
+        background-color: var(--sage-tint) !important;
+    }
+
+    /* Selected-region chips in the multiselect, recolored to match. */
+    span[data-baseweb="tag"] { background-color: var(--sage) !important; }
+
+    /* A small rosewood dot before every bold section title -
+       a quiet nod to a synapse, marking where a new "signal" starts. */
+    [data-testid="stMarkdownContainer"] strong::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--rosewood);
+        margin-right: 6px;
+        vertical-align: middle;
+    }
+
     footer { visibility: hidden; }
     #MainMenu { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
+
+# Tiny neuron-and-petal mark used next to the brand name. Six dendrites
+# radiating from a soma double as flower petals - the neuroscience/girly
+# crossover lives here.
+NEURON_MARK = """
+<svg width="20" height="20" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg"
+     style="vertical-align:-4px;margin-right:6px;">
+    <g stroke="#5F7350" stroke-width="1.6" fill="none" stroke-linecap="round">
+        <path d="M22 17 Q18 8 12 6"/>
+        <path d="M22 17 Q26 7 33 9"/>
+        <path d="M27 22 Q36 20 40 14"/>
+        <path d="M27 25 Q37 28 41 35"/>
+        <path d="M17 27 Q12 35 6 38"/>
+        <path d="M17 22 Q7 21 3 16"/>
+    </g>
+    <g fill="#5F7350">
+        <circle cx="12" cy="6" r="1.6"/><circle cx="33" cy="9" r="1.6"/>
+        <circle cx="40" cy="14" r="1.6"/><circle cx="41" cy="35" r="1.6"/>
+        <circle cx="6" cy="38" r="1.6"/><circle cx="3" cy="16" r="1.6"/>
+    </g>
+    <circle cx="22" cy="22" r="5" fill="#7A3B3B"/>
+</svg>
+"""
 
 # =============================================================================
 # GLOBÁLIS ADATOK BETÖLTÉSE
@@ -168,7 +259,7 @@ all_swc = get_all_swc_files(BASE_DATA_DIR)
 # OLDALSÁV
 # =============================================================================
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">Palyakoveto</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sidebar-title">{NEURON_MARK}Palyakoveto</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Neuron Projection Analyzer — KOKI</div>', unsafe_allow_html=True)
     st.divider()
 
@@ -340,26 +431,45 @@ with st.sidebar:
                         st.caption(f"Soma region: {match.values[0]}")
 
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Select all", use_container_width=True, key="btn_select_all"):
-                    st.session_state['batch_selection'] = list(filtered_swc.keys())
-            with col2:
-                if st.button("Clear", use_container_width=True, key="btn_clear"):
-                    st.session_state['batch_selection'] = []
+            use_all_matches = False
+            if soma_search and len(filtered_swc) < len(all_swc):
+                use_all_matches = st.checkbox(
+                    f"Use all {len(filtered_swc)} matched cells for batch analysis",
+                    value=True,
+                    help=(
+                        "Skips manual selection below and runs the batch on every cell "
+                        "that matched the soma region filter. Uncheck to pick cells by hand instead."
+                    ),
+                    key="use_all_matches"
+                )
 
-            batch_default = [
-                k for k in st.session_state.get('batch_selection', [])
-                if k in filtered_swc
-            ]
-            selected_names = st.multiselect(
-                "Select cells for batch analysis",
-                options=list(filtered_swc.keys()),
-                default=batch_default,
-                help="Select multiple cells. Max recommended: ~50 at once.",
-                key="batch_selector"
-            )
-            selected_swc_paths = [filtered_swc[name] for name in selected_names]
+            if use_all_matches:
+                selected_swc_paths = list(filtered_swc.values())
+                st.caption(
+                    f"{len(selected_swc_paths)} cells will be analyzed "
+                    f"(all matches for \"{soma_search}\")."
+                )
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Select all", use_container_width=True, key="btn_select_all"):
+                        st.session_state['batch_selection'] = list(filtered_swc.keys())
+                with col2:
+                    if st.button("Clear", use_container_width=True, key="btn_clear"):
+                        st.session_state['batch_selection'] = []
+
+                batch_default = [
+                    k for k in st.session_state.get('batch_selection', [])
+                    if k in filtered_swc
+                ]
+                selected_names = st.multiselect(
+                    "Select cells for batch analysis",
+                    options=list(filtered_swc.keys()),
+                    default=batch_default,
+                    help="Select multiple cells. Max recommended: ~50 at once.",
+                    key="batch_selector"
+                )
+                selected_swc_paths = [filtered_swc[name] for name in selected_names]
 
     st.divider()
 
@@ -379,9 +489,9 @@ with st.sidebar:
 # =============================================================================
 
 if not selected_swc_paths or not selected_region_ids:
-    st.markdown("""
+    st.markdown(f"""
     <div class="page-header">
-        <h1>Palyakoveto</h1>
+        <h1>{NEURON_MARK}Palyakoveto</h1>
         <p>Neuron Projection Analyzer &mdash; Koki Institute</p>
     </div>
     """, unsafe_allow_html=True)
@@ -623,6 +733,36 @@ if 'results' in st.session_state and st.session_state['results']:
             use_container_width=True,
             key="btn_download_csv"
         )
+
+        st.divider()
+
+        # Összes sejt egyszerre egy 3D ábrán - batch összehasonlításhoz
+        st.markdown("**Combined 3D Visualization**")
+        st.caption(
+            "Plot every analyzed cell together on one 3D scene. Each cell gets its own "
+            "color (soma + full axon tree) so you can tell them apart. "
+            "Recommended for at most a few dozen cells at once — large batches will be slow."
+        )
+
+        max_combined = 60
+        if len(results) > max_combined:
+            st.warning(
+                f"{len(results)} cells in this batch — rendering all of them together "
+                f"would be very slow. Only the first {max_combined} will be shown."
+            )
+        combined_results = results[:max_combined]
+
+        if st.button(
+            f"Open combined 3D Viewer — {len(combined_results)} cells",
+            type="secondary",
+            key="btn_3d_combined"
+        ):
+            with st.spinner(f"Building combined 3D plot for {len(combined_results)} cells..."):
+                plotter = build_3d_plot_multi(
+                    combined_results, atlas_matrix, selected_region_ids,
+                    show_target_regions=True
+                )
+            show_plot_local(plotter)
 
         st.divider()
 

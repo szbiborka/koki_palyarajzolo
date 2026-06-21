@@ -11,7 +11,9 @@ import pandas as pd
 from config import VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED
 
 
-# --- Adatstruktúrák ---
+# =============================================================================
+# ADATSTRUKTÚRÁK
+# =============================================================================
 
 @dataclass
 class RegionResult:
@@ -21,9 +23,47 @@ class RegionResult:
     """
     region_id: int
     region_name: str
-    projects_here: bool          # Vetít-e a sejtünk ide (endpoint vagy branch pont alapján)
-    projection_point_count: int  # Végpontok + elágazási pontok száma ebben a régióban
-    axon_length_um: float        # Axonhossz mikrométerben
+    projects_here: bool           # Vetít-e a sejtünk ide (endpoint vagy branch pont alapján)
+    endpoint_count: int           # Csak végpontok száma (gyerek nélküli axon csomópontok)
+    branch_point_count: int       # Csak elágazási pontok száma (>1 gyerek)
+    projection_point_count: int   # Végpontok + elágazási pontok összesen
+    axon_length_um: float         # Axonhossz mikrométerben ebben a régióban
+
+
+@dataclass
+class FilterCriteria:
+    """
+    A felhasználó által megadott szűrési feltételek egy célterületre.
+    Ha minden érték 0, nincs szűrés - minden sejt átmegy.
+
+    Fontos: a feltételek ÉS logikával kapcsolódnak -
+    minden megadott feltételnek teljesülnie kell egyszerre.
+    """
+    min_endpoints: int = 0        # Minimum végpontok száma
+    min_branch_points: int = 0    # Minimum elágazási pontok száma
+    min_axon_length_um: float = 0 # Minimum axonhossz mikrométerben
+
+    def is_active(self) -> bool:
+        """Visszaadja, hogy van-e egyáltalán aktív szűrési feltétel."""
+        return self.min_endpoints > 0 or self.min_branch_points > 0 or self.min_axon_length_um > 0
+
+    def check(self, region_result: 'RegionResult') -> bool:
+        """
+        Ellenőrzi, hogy egy régió eredménye teljesíti-e az összes szűrési feltételt.
+
+        Args:
+            region_result: a vizsgált régió analízis eredménye
+
+        Returns:
+            True ha a sejt teljesíti az összes feltételt, False ha kiesik
+        """
+        if region_result.endpoint_count < self.min_endpoints:
+            return False
+        if region_result.branch_point_count < self.min_branch_points:
+            return False
+        if region_result.axon_length_um < self.min_axon_length_um:
+            return False
+        return True
 
 
 @dataclass
@@ -46,12 +86,18 @@ class CellAnalysisResult:
     # Teljes axonhossz
     total_axon_length_um: float
 
+    # Szűrési státusz - True ha a sejt átmegy az összes szűrési feltételen
+    # None értéket kap, ha nem volt aktív szűrés
+    passes_filter: bool | None = None
+
     # Nyers adatok a vizualizációhoz - itt tároljuk el a feldolgozott koordinátákat
     # hogy a viz modul ne kelljen, hogy újraszámoljon mindent
     coords: dict = field(default_factory=dict)
 
 
-# --- Fő analízis függvény ---
+# =============================================================================
+# FŐ ANALÍZIS FÜGGVÉNY
+# =============================================================================
 
 def run_analysis(
     swc_df: pd.DataFrame,
@@ -112,12 +158,13 @@ def run_analysis(
     is_axon = (type_arr == SWC_TYPE_AXON) | (type_arr == SWC_TYPE_AXON_UNDEFINED)
 
     # --- 4. Vetítési pontok azonosítása (a kulcslépés!) ---
-    # Végpontok: axon csomópontok gyerek nélkül
+    # Végpontok és elágazások külön-külön tárolva a szűréshez
     ep_idx = np.where((child_counts == 0) & is_axon)[0]
-    # Elágazási pontok: axon csomópontok egynél több gyerekkel
     branch_idx = np.where((child_counts > 1) & is_axon)[0]
-    # Vetítési pontok = végpontok UNIÓ elágazási pontok
     proj_idx = np.union1d(ep_idx, branch_idx)
+
+    ep_regions = point_regions[ep_idx]
+    branch_regions = point_regions[branch_idx]
     proj_regions = point_regions[proj_idx]
 
     # --- 5. Axonhossz számítás (Pitagorasz-tétel vektorizálva) ---
@@ -155,8 +202,10 @@ def run_analysis(
         name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
         region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
 
-        # Vetítési pontok száma ebben a régióban
-        proj_count = int(np.sum(proj_regions == region_id))
+        # Végpontok és elágazások száma külön-külön ebben a régióban
+        ep_count = int(np.sum(ep_regions == region_id))
+        br_count = int(np.sum(branch_regions == region_id))
+        proj_count = ep_count + br_count
 
         # Axonhossz ebben a régióban
         region_axon_mask = axon_mask_curr & (point_regions[curr_idx] == region_id)
@@ -166,6 +215,8 @@ def run_analysis(
             region_id=region_id,
             region_name=region_name,
             projects_here=(proj_count > 0),
+            endpoint_count=ep_count,
+            branch_point_count=br_count,
             projection_point_count=proj_count,
             axon_length_um=axon_len
         ))
@@ -181,7 +232,9 @@ def run_analysis(
     for region_id in other_region_ids:
         name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
         region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
-        proj_count = int(np.sum(proj_regions == region_id))
+        ep_count = int(np.sum(ep_regions == region_id))
+        br_count = int(np.sum(branch_regions == region_id))
+        proj_count = ep_count + br_count
         region_axon_mask = axon_mask_curr & (point_regions[curr_idx] == region_id)
         axon_len = float(np.sum(distances[region_axon_mask]))
 
@@ -189,6 +242,8 @@ def run_analysis(
             region_id=int(region_id),
             region_name=region_name,
             projects_here=True,
+            endpoint_count=ep_count,
+            branch_point_count=br_count,
             projection_point_count=proj_count,
             axon_length_um=axon_len
         ))
@@ -201,6 +256,8 @@ def run_analysis(
         'is_axon': is_axon,
         'point_regions': point_regions,
         'proj_idx': proj_idx,
+        'ep_idx': ep_idx,
+        'branch_idx': branch_idx,
         'curr_idx': curr_idx,
         'parent_row_indices': parent_row_indices,
         'soma_idx': soma_idx,
@@ -218,14 +275,60 @@ def run_analysis(
     )
 
 
+# =============================================================================
+# SZŰRÉS
+# =============================================================================
+
+def apply_filter(
+    result: CellAnalysisResult,
+    criteria_per_region: dict[int, FilterCriteria]
+) -> CellAnalysisResult:
+    """
+    Ellenőrzi, hogy egy sejt analízis eredménye megfelel-e a szűrési feltételeknek.
+    A szűrés ÉS logikával működik: MINDEN célterületre teljesülnie kell a feltételnek.
+
+    Módosítja a result.passes_filter mezőt és visszaadja az objektumot.
+    Nem változtat semmin más a result-ban - az eredeti adatok megmaradnak.
+
+    Args:
+        result: a run_analysis() által visszaadott eredmény
+        criteria_per_region: dict, amelynek kulcsa a régió ID, értéke a FilterCriteria
+
+    Returns:
+        Az ugyanaz a CellAnalysisResult, passes_filter mezővel kitöltve
+    """
+    # Ha nincs egyetlen aktív feltétel sem, minden sejt átmegy
+    if not any(c.is_active() for c in criteria_per_region.values()):
+        result.passes_filter = None  # None = nem volt szűrés
+        return result
+
+    # Minden célterületre ellenőrzés
+    for tr in result.target_results:
+        criteria = criteria_per_region.get(tr.region_id)
+        if criteria is None or not criteria.is_active():
+            continue  # Erre a régióra nincs feltétel, kihagyjuk
+
+        if not criteria.check(tr):
+            result.passes_filter = False
+            return result
+
+    result.passes_filter = True
+    return result
+
+
+# =============================================================================
+# EXPORTÁLÁS
+# =============================================================================
+
 def results_to_dataframe(
-    results: list[tuple[str, 'CellAnalysisResult']],
+    results: list[tuple[str, CellAnalysisResult]],
     target_region_ids: list[int],
     dictionary: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Több sejt analízis eredményét összesíti egy DataFrame-be exportáláshoz.
-    Ez a batch elemzés exportálási funkciójához kell majd.
+    Tartalmazza az endpoint és branch point számokat külön oszlopokban,
+    és a passes_filter státuszt is.
 
     Args:
         results: lista (sejt_név, CellAnalysisResult) párokból
@@ -233,7 +336,7 @@ def results_to_dataframe(
         dictionary: régió szótár
 
     Returns:
-        DataFrame ahol minden sor egy sejt, oszlopok a régiók
+        DataFrame ahol minden sor egy sejt, oszlopok a régiók részletes adataival
     """
     rows = []
     for cell_name, result in results:
@@ -241,13 +344,15 @@ def results_to_dataframe(
             'cell': cell_name,
             'soma_region': result.soma_region_name,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
+            'passes_filter': result.passes_filter,
         }
-        # Minden célterülethez oszlop: vetít-e + axonhossz
+        # Minden célterülethez részletes oszlopok
         for tr in result.target_results:
-            safe_col = tr.region_name.replace(' ', '_').lower()
+            safe_col = tr.region_name.replace(' ', '_').lower()[:30]
             row[f'{safe_col}_projects'] = tr.projects_here
+            row[f'{safe_col}_endpoints'] = tr.endpoint_count
+            row[f'{safe_col}_branches'] = tr.branch_point_count
             row[f'{safe_col}_axon_um'] = round(tr.axon_length_um, 1)
-            row[f'{safe_col}_proj_points'] = tr.projection_point_count
 
         rows.append(row)
 

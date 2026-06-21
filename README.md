@@ -140,3 +140,4 @@ Note: the 3D viewer (`plotter.show()`) requires a display and will not work on a
 
 Allen Mouse Brain Atlas, 25 µm resolution (`annotation_25.nrrd`).
 Region dictionary: `query.csv` with fields `id`, `acronym`, `safe_name`.
+

@@ -1,4 +1,4 @@
-# 🧠 Pátyakovető — Neuron Projection Analyzer
+# 🧠 Pályakövető — Neuron Projection Analyzer
 
 A research tool for analyzing neuron projections in the Allen Mouse Brain Atlas.
 

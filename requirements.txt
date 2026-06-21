@@ -1,0 +1,10 @@
+# Pátyakovető – függőségek
+# Telepítés: pip install -r requirements.txt
+# PyCharm-ban: Settings > Python Interpreter > "+" gomb
+
+numpy>=1.24
+pandas>=2.0
+pynrrd>=1.0
+pyvista>=0.43
+scikit-image>=0.21
+streamlit>=1.35

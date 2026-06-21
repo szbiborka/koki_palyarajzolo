@@ -1,6 +1,6 @@
 # Pályakövető — Neuron Projection Analyzer
 
-A browser-based research tool for analyzing and visualizing neuron projections in the Allen Mouse Brain Atlas. Built at the Koki Institute.
+A browser-based research tool for analyzing and visualizing neuron projections in the Allen Mouse Brain Atlas. Built at the HUN-REN IEM.
 
 ---
 

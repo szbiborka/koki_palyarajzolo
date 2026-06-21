@@ -201,6 +201,100 @@ def build_3d_plot(
     return plotter
 
 
+def build_3d_plot_multi(
+    results: list[tuple[str, CellAnalysisResult]],
+    atlas_matrix: np.ndarray,
+    target_region_ids: list[int],
+    show_target_regions: bool = True,
+) -> pv.Plotter:
+    """
+    Több sejtet jelenít meg egyszerre egy 3D ábrán - batch összehasonlításhoz.
+    Minden sejt saját színt kap (szóma + teljes axonfa), így könnyen
+    megkülönböztethetők egymástól. A célterületek félig átlátszó
+    felszínként jelennek meg háttérként, csak egyszer felépítve
+    (nem sejtenként újra).
+
+    Args:
+        results: lista (sejt_név, CellAnalysisResult) párokból
+        atlas_matrix: az Allen Brain Atlas 3D mátrixa
+        target_region_ids: a vizsgált célterületek ID listája
+        show_target_regions: megjelenítse-e a célterületek felszíneit
+
+    Returns:
+        Konfigurált pv.Plotter objektum, az összes sejttel egyszerre
+    """
+    # Régió nevek kinyerése az első eredményből (mindegyik ugyanazokkal
+    # a célterületekkel futott, ezért elég egyszer megnézni)
+    region_names: dict[int, str] = {}
+    if results:
+        for tr in results[0][1].target_results:
+            region_names[tr.region_id] = tr.region_name
+
+    plotter = pv.Plotter(window_size=[1200, 850], off_screen=False)
+    plotter.set_background('white')
+
+    # --- 1. Célterület felszínek (egyszer épülnek fel) ---
+    if show_target_regions:
+        for i, region_id in enumerate(target_region_ids):
+            mesh = _build_isosurface(atlas_matrix == region_id)
+            if mesh:
+                color = _get_region_color(i)
+                label = region_names.get(region_id, f"Region {region_id}")
+                plotter.add_mesh(
+                    mesh, color=color, opacity=VIZ_REGION_OPACITY * 0.6,
+                    smooth_shading=True, label=label
+                )
+
+    # --- 2. Minden sejt saját színt kap a palettából, körkörösen ---
+    palette = COLORS['region_palette']
+
+    for i, (cell_name, result) in enumerate(results):
+        cell_color = palette[i % len(palette)]
+        coords = result.coords
+        x, y, z = coords['x'], coords['y'], coords['z']
+        is_axon = coords['is_axon']
+        curr_idx = coords['curr_idx']
+        parent_row_indices = coords['parent_row_indices']
+        soma_idx = coords['soma_idx']
+
+        # Axon vonalak ehhez a sejthez - egy PolyData az egész fához,
+        # ugyanúgy mint a single-cell nézetben, hatékonyság miatt
+        points_list = []
+        lines_list = []
+        idx = 0
+        for j in curr_idx:
+            if not is_axon[j]:
+                continue
+            p_row = parent_row_indices[j]
+            points_list.append([x[j], y[j], z[j]])
+            points_list.append([x[p_row], y[p_row], z[p_row]])
+            lines_list.extend([2, idx, idx + 1])
+            idx += 2
+
+        if points_list:
+            poly = pv.PolyData()
+            poly.points = np.array(points_list)
+            poly.lines = np.array(lines_list)
+            plotter.add_mesh(poly, color=cell_color, line_width=VIZ_AXON_LINE_WIDTH)
+
+        # Szóma pötty - ugyanazzal a színnel mint az axonfa
+        if soma_idx is not None:
+            soma_sphere = pv.Sphere(
+                radius=VIZ_SOMA_RADIUS,
+                center=(x[soma_idx], y[soma_idx], z[soma_idx])
+            )
+            plotter.add_mesh(soma_sphere, color=cell_color)
+
+    # --- 3. Kamera és tengelyek ---
+    plotter.camera.up = (0, -1, 0)
+    plotter.show_axes()
+    if show_target_regions:
+        plotter.add_legend(bcolor='white', border=True)
+    plotter.add_title(f'Combined view — {len(results)} cells', font_size=10)
+
+    return plotter
+
+
 def show_plot_local(plotter: pv.Plotter) -> None:
     """
     Lokális ablakban jeleníti meg az ábrát (fejlesztéshez, PyCharm-ban).

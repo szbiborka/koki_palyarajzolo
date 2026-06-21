@@ -4,15 +4,20 @@
 # Futtatás: streamlit run app.py
 # =============================================================================
 
+import os
 import streamlit as st
 import pandas as pd
 
-from config import BASE_DATA_DIR, DEFAULT_TARGET_REGIONS
+from config import BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
-    get_all_swc_files, build_region_search_options
+    get_all_swc_files, build_region_search_options,
+    load_soma_index, build_soma_index, soma_index_exists,
+    filter_swc_by_soma_region
 )
-from core.analysis import run_analysis, results_to_dataframe
+from core.analysis import (
+    run_analysis, apply_filter, results_to_dataframe, FilterCriteria
+)
 from core.visualization import build_3d_plot, show_plot_local
 
 # =============================================================================
@@ -25,15 +30,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Egyedi CSS: professzionálisabb, tudományos megjelenés
 st.markdown("""
 <style>
-    /* Fő betűtípus és háttér */
     html, body, [class*="css"] {
         font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
     }
-
-    /* Oldalsáv fejléc */
     .sidebar-title {
         font-size: 1.1rem;
         font-weight: 700;
@@ -49,8 +50,6 @@ st.markdown("""
         text-transform: uppercase;
         margin-bottom: 1rem;
     }
-
-    /* Eredmény kártyák */
     .result-card {
         background: #f8f9fb;
         border: 1px solid #e0e4ec;
@@ -59,11 +58,11 @@ st.markdown("""
         padding: 0.9rem 1.1rem;
         margin-bottom: 0.6rem;
     }
-    .result-card.positive {
-        border-left-color: #2a7f4f;
-    }
-    .result-card.negative {
-        border-left-color: #b0b0b0;
+    .result-card.positive { border-left-color: #2a7f4f; }
+    .result-card.negative { border-left-color: #b0b0b0; }
+    .result-card.filtered-out {
+        border-left-color: #c0392b;
+        background: #fff8f8;
     }
     .result-card h4 {
         margin: 0 0 0.4rem 0;
@@ -71,10 +70,7 @@ st.markdown("""
         font-weight: 600;
         color: #1a1a2e;
     }
-    .result-card .meta {
-        font-size: 0.82rem;
-        color: #555;
-    }
+    .result-card .meta { font-size: 0.82rem; color: #555; }
     .tag-yes {
         display: inline-block;
         background: #e6f4ee;
@@ -99,8 +95,31 @@ st.markdown("""
         text-transform: uppercase;
         margin-right: 0.5rem;
     }
-
-    /* Lap teteje */
+    .tag-filtered {
+        display: inline-block;
+        background: #fdecea;
+        color: #c0392b;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        padding: 0.15rem 0.5rem;
+        border-radius: 3px;
+        text-transform: uppercase;
+        margin-right: 0.5rem;
+    }
+    .filter-box {
+        background: #f0f4fa;
+        border: 1px solid #c8d4e8;
+        border-radius: 4px;
+        padding: 0.8rem 1rem;
+        margin-bottom: 0.5rem;
+    }
+    .filter-box h5 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #1a1a2e;
+    }
     .page-header {
         border-bottom: 2px solid #1a1a2e;
         padding-bottom: 0.5rem;
@@ -118,43 +137,22 @@ st.markdown("""
         color: #555;
         margin: 0.2rem 0 0 0;
     }
-
-    /* Metrika feliratok finomítása */
     [data-testid="metric-container"] {
         background: #f8f9fb;
         border: 1px solid #e0e4ec;
         border-radius: 4px;
         padding: 0.7rem 1rem;
     }
-
-    /* Elválasztó vonal */
-    hr {
-        border: none;
-        border-top: 1px solid #e0e4ec;
-        margin: 1.2rem 0;
-    }
-
-    /* Táblázat finomítás */
-    [data-testid="stDataFrame"] {
-        border: 1px solid #e0e4ec;
-        border-radius: 4px;
-    }
-
-    /* Gombok */
-    .stButton > button {
-        border-radius: 3px;
-        font-weight: 600;
-        letter-spacing: 0.03em;
-    }
-
-    /* Lábléc elrejtése */
+    hr { border: none; border-top: 1px solid #e0e4ec; margin: 1.2rem 0; }
+    [data-testid="stDataFrame"] { border: 1px solid #e0e4ec; border-radius: 4px; }
+    .stButton > button { border-radius: 3px; font-weight: 600; letter-spacing: 0.03em; }
     footer { visibility: hidden; }
     #MainMenu { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# GLOBÁLIS ADATOK BETÖLTÉSE (csak egyszer fut le, cache-ből jön vissza ezután)
+# GLOBÁLIS ADATOK BETÖLTÉSE
 # =============================================================================
 try:
     atlas_matrix, atlas_header = load_atlas()
@@ -164,23 +162,25 @@ except FileNotFoundError as e:
     st.error(f"Data file not found. Please check config.py.\n\n{e}")
     st.stop()
 
+all_swc = get_all_swc_files(BASE_DATA_DIR)
+
 # =============================================================================
-# OLDALSÁV - Beállítások és fájlválasztás
+# OLDALSÁV
 # =============================================================================
 with st.sidebar:
     st.markdown('<div class="sidebar-title">Palyakoveto</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Neuron Projection Analyzer — KOKI</div>', unsafe_allow_html=True)
     st.divider()
 
-    # --- Célterületek kiválasztása ---
+    # -------------------------------------------------------------------------
+    # SZEKCIÓ 1: Célterületek
+    # -------------------------------------------------------------------------
     st.markdown("**Target Brain Regions**")
     st.caption(
         "Projections are detected by endpoints and branch points only. "
         "Axons that merely pass through a region are not counted."
     )
 
-    # Az alapértelmezett célterületek előre be vannak töltve
-    # A felhasználó bármilyen régiót kereshet az atlasz szótárból
     selected_region_names = st.multiselect(
         label="Search and select regions",
         options=list(region_options.keys()),
@@ -188,80 +188,196 @@ with st.sidebar:
             name for name in region_options.keys()
             if region_options[name] in DEFAULT_TARGET_REGIONS.values()
         ],
-        help="Type to search by region name or acronym."
+        help="Type to search by region name or acronym.",
+        key="region_selector"
     )
-
-    # A kiválasztott nevek alapján összegyűjtjük az ID-kat
     selected_region_ids = [region_options[name] for name in selected_region_names]
 
     st.divider()
 
-    # --- SWC fájlok kezelése ---
+    # -------------------------------------------------------------------------
+    # SZEKCIÓ 2: Szűrési feltételek (Phase 1)
+    # Minden kiválasztott célterülethez külön szűrők
+    # -------------------------------------------------------------------------
+    st.markdown("**Projection Filter Criteria**")
+    st.caption(
+        "Set minimum thresholds per region. All conditions must be met simultaneously. "
+        "Leave at 0 to disable filtering."
+    )
+
+    # Minden célterülethez egy összecsukható szűrő panel
+    # A criteria_per_region szótárba gyűjtjük a feltételeket
+    criteria_per_region: dict[int, FilterCriteria] = {}
+
+    if not selected_region_ids:
+        st.caption("Select target regions above to set filter criteria.")
+    else:
+        for region_name_full in selected_region_names:
+            region_id = region_options[region_name_full]
+            # Rövid megjelenítési nevet kivágunk a zárójelből
+            short_name = region_name_full.split('(')[-1].replace(')', '').strip()
+
+            with st.expander(f"Filters for {short_name}", expanded=False):
+                min_ep = st.number_input(
+                    "Min. endpoints",
+                    min_value=0, value=DEFAULT_FILTER['min_endpoints'],
+                    step=1,
+                    help="Minimum number of axon terminal points in this region.",
+                    key=f"filter_ep_{region_id}"
+                )
+                min_br = st.number_input(
+                    "Min. branch points",
+                    min_value=0, value=DEFAULT_FILTER['min_branch_points'],
+                    step=1,
+                    help="Minimum number of axon branching points in this region.",
+                    key=f"filter_br_{region_id}"
+                )
+                min_len = st.number_input(
+                    "Min. axon length (µm)",
+                    min_value=0.0, value=float(DEFAULT_FILTER['min_axon_length_um']),
+                    step=10.0,
+                    help="Minimum total axon length within this region.",
+                    key=f"filter_len_{region_id}"
+                )
+                criteria_per_region[region_id] = FilterCriteria(
+                    min_endpoints=int(min_ep),
+                    min_branch_points=int(min_br),
+                    min_axon_length_um=float(min_len)
+                )
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # SZEKCIÓ 3: Sejtek kiválasztása (Phase 2)
+    # Soma régió alapú szűrés + fájlválasztó
+    # -------------------------------------------------------------------------
     st.markdown("**Cell Files (SWC)**")
 
-    # Az elérhető SWC fájlok listája az alap mappából
-    available_swc = get_all_swc_files(BASE_DATA_DIR)
-
-    if not available_swc:
-        st.warning(
-            f"No SWC files found in:\n`{BASE_DATA_DIR}`\n\n"
-            "Please check BASE_DATA_DIR in config.py"
-        )
+    if not all_swc:
+        st.warning(f"No SWC files found in:\n`{BASE_DATA_DIR}`\n\nPlease check BASE_DATA_DIR in config.py")
         selected_swc_paths = []
     else:
-        st.caption(f"{len(available_swc)} SWC files available.")
+        st.caption(f"{len(all_swc)} SWC files available.")
 
-        # Mód váltó: egy sejt vs. batch elemzés
+        # --- Soma index kezelése ---
+        # Az index nélkül a soma szűrés nem működik, ezért itt kezeljük
+        if not soma_index_exists():
+            st.warning(
+                "Soma region index not built yet. "
+                "Build it to enable filtering by soma location."
+            )
+            if st.button("Build soma index", key="btn_build_index",
+                         help="Scans all SWC files to find soma regions. Takes a few minutes."):
+                progress_bar = st.progress(0, text="Building soma index...")
+
+                def update_progress(current, total, filename):
+                    pct = current / total if total > 0 else 0
+                    progress_bar.progress(pct, text=f"Indexing: {filename}")
+
+                with st.spinner("Building soma index..."):
+                    build_soma_index(BASE_DATA_DIR, atlas_matrix, dictionary, update_progress)
+
+                progress_bar.empty()
+                st.success("Soma index built successfully.")
+                st.rerun()
+
+            soma_index = None
+        else:
+            soma_index = load_soma_index()
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                if st.button("Rebuild", key="btn_rebuild_index",
+                             help="Rebuild the soma index if new SWC files were added."):
+                    with st.spinner("Rebuilding soma index..."):
+                        build_soma_index(BASE_DATA_DIR, atlas_matrix, dictionary)
+                    st.success("Soma index rebuilt.")
+                    st.rerun()
+
+        # --- Soma régió szűrő ---
+        # Csak akkor jelenik meg ha az index már megvan
+        soma_search = ""
+        if soma_index is not None:
+            with st.expander("Filter by soma region", expanded=False):
+                soma_search = st.text_input(
+                    "Search soma region",
+                    placeholder="e.g. motor, thalamus, striatum...",
+                    help="Type part of a region name. Only cells with matching soma regions will be shown.",
+                    key="soma_search"
+                )
+                if soma_search:
+                    filtered_swc = filter_swc_by_soma_region(all_swc, soma_index, soma_search)
+                    st.caption(f"{len(filtered_swc)} of {len(all_swc)} cells match.")
+                else:
+                    filtered_swc = all_swc
+        else:
+            filtered_swc = all_swc
+
+        # --- Analízis mód és fájlválasztás ---
         analysis_mode = st.radio(
             "Analysis mode",
             options=["Single cell", "Batch (multiple cells)"],
-            horizontal=True
+            horizontal=True,
+            key="analysis_mode"
         )
 
         if analysis_mode == "Single cell":
-            # Egyetlen fájl választó legördülő menü
-            selected_name = st.selectbox(
-                "Select cell",
-                options=list(available_swc.keys()),
-                help="Format: mouse_folder/cell.swc"
-            )
-            selected_swc_paths = [available_swc[selected_name]]
+            if not filtered_swc:
+                st.warning("No cells match the current soma region filter.")
+                selected_swc_paths = []
+            else:
+                selected_name = st.selectbox(
+                    "Select cell",
+                    options=list(filtered_swc.keys()),
+                    help="Format: mouse_folder/cell.swc",
+                    key="single_cell_selector"
+                )
+                selected_swc_paths = [filtered_swc[selected_name]]
+
+                # Ha van soma index, megmutatjuk a kiválasztott sejt soma régióját
+                if soma_index is not None:
+                    match = soma_index.loc[soma_index['swc_path'] == selected_name, 'soma_region_name']
+                    if not match.empty:
+                        st.caption(f"Soma region: {match.values[0]}")
 
         else:
-            # Batch módban: multiselect vagy "select all" gomb
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("Select all", use_container_width=True, key="btn_select_all"):
-                    st.session_state['batch_selection'] = list(available_swc.keys())
+                    st.session_state['batch_selection'] = list(filtered_swc.keys())
             with col2:
                 if st.button("Clear", use_container_width=True, key="btn_clear"):
                     st.session_state['batch_selection'] = []
 
-            batch_default = st.session_state.get('batch_selection', [])
+            batch_default = [
+                k for k in st.session_state.get('batch_selection', [])
+                if k in filtered_swc
+            ]
             selected_names = st.multiselect(
                 "Select cells for batch analysis",
-                options=list(available_swc.keys()),
+                options=list(filtered_swc.keys()),
                 default=batch_default,
-                help="Select multiple cells. Max recommended: ~50 at once."
+                help="Select multiple cells. Max recommended: ~50 at once.",
+                key="batch_selector"
             )
-            selected_swc_paths = [available_swc[name] for name in selected_names]
+            selected_swc_paths = [filtered_swc[name] for name in selected_names]
 
     st.divider()
 
-    # --- Vizualizáció beállítások ---
+    # -------------------------------------------------------------------------
+    # SZEKCIÓ 4: Vizualizáció beállítások
+    # -------------------------------------------------------------------------
     st.markdown("**Visualization**")
-    show_soma_region = st.toggle("Show soma region", value=True)
-    show_other_regions = st.toggle("Show other projection regions", value=True)
+    show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
+    show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
 
     st.divider()
     st.caption("Atlas: Allen Mouse Brain Atlas (25 µm)")
-    st.caption("Palyakoveto v0.1")
+    st.caption("Palyakoveto v0.2")
 
 # =============================================================================
 # FŐ TARTALOM
 # =============================================================================
 
-# Ha nincs semmi kiválasztva, mutassunk egy üdvözlő üzenetet
 if not selected_swc_paths or not selected_region_ids:
     st.markdown("""
     <div class="page-header">
@@ -270,18 +386,20 @@ if not selected_swc_paths or not selected_region_ids:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("**To get started**, select target brain regions and one or more cell files in the sidebar, then click Run Analysis.")
+    st.markdown(
+        "**To get started**, select target brain regions and one or more cell files "
+        "in the sidebar, then click Run Analysis."
+    )
 
-    # Rövid magyarázó szöveg a módszerről
     with st.expander("About the projection detection method"):
         st.markdown("""
         **What makes Palyakoveto different from other tools?**
 
-        Many tools (including some published databases) mark a neuron as projecting to a region
-        simply because the axon passes through that region. This leads to false positives.
+        Many tools mark a neuron as projecting to a region simply because the axon passes
+        through that region. This leads to false positives.
 
-        Palyakoveto uses a stricter anatomical criterion: a neuron is counted as projecting to a
-        region only if it has an **endpoint** or **branch point** located within that region.
+        Palyakoveto uses a stricter anatomical criterion: a neuron is counted as projecting
+        to a region only if it has an **endpoint** or **branch point** located within that region.
 
         | Point type | Definition |
         |---|---|
@@ -289,40 +407,52 @@ if not selected_swc_paths or not selected_region_ids:
         | **Branch point** | The axon splits here — suggesting local arborization |
         | Pass-through | Axon crosses the region but does not end or branch — not counted |
 
-        This approach more accurately reflects the anatomical definition of a projection target.
+        Additionally, you can set **minimum thresholds** for endpoints, branch points, and axon
+        length per region, allowing precise population-level filtering.
         """)
-
     st.stop()
 
 # =============================================================================
 # ANALÍZIS FUTTATÁSA
 # =============================================================================
+
+# Ellenőrizzük, hogy van-e aktív szűrési feltétel, hogy a gomb szövege informatív legyen
+any_filter_active = any(c.is_active() for c in criteria_per_region.values())
+filter_note = "  (filter active)" if any_filter_active else ""
+
 run_button = st.button(
-    f"Run Analysis  —  {len(selected_swc_paths)} cell{'s' if len(selected_swc_paths) > 1 else ''}",
+    f"Run Analysis  —  {len(selected_swc_paths)} cell{'s' if len(selected_swc_paths) > 1 else ''}{filter_note}",
     type="primary",
     use_container_width=True,
     key="btn_run_analysis"
 )
 
 if run_button:
-    # Eredmények tárolása a session state-ben, hogy a UI frissítésekor megmaradjanak
     st.session_state['results'] = []
     st.session_state['errors'] = []
+    st.session_state['criteria_per_region'] = criteria_per_region
 
     progress = st.progress(0, text="Analyzing cells...")
 
     for i, filepath in enumerate(selected_swc_paths):
-        cell_name = list(available_swc.keys())[
-            list(available_swc.values()).index(filepath)
-        ]
+        # Relatív útvonal visszakeresése a megjelenítéshez
+        cell_name = next(
+            (k for k, v in filtered_swc.items() if v == filepath),
+            os.path.basename(filepath)
+        )
         try:
             swc_df = load_swc(filepath)
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids)
+            # Szűrés alkalmazása az analízis után
+            result = apply_filter(result, criteria_per_region)
             st.session_state['results'].append((cell_name, result))
         except Exception as e:
             st.session_state['errors'].append((cell_name, str(e)))
 
-        progress.progress((i + 1) / len(selected_swc_paths), text=f"Analyzed: {cell_name}")
+        progress.progress(
+            (i + 1) / len(selected_swc_paths),
+            text=f"Analyzed: {cell_name}"
+        )
 
     progress.empty()
 
@@ -337,19 +467,29 @@ if 'errors' in st.session_state and st.session_state['errors']:
 
 if 'results' in st.session_state and st.session_state['results']:
     results = st.session_state['results']
+    saved_criteria = st.session_state.get('criteria_per_region', {})
+    filter_was_active = any(c.is_active() for c in saved_criteria.values())
 
-    # --- EGYETLEN SEJT NÉZET ---
+    # -------------------------------------------------------------------------
+    # EGYETLEN SEJT NÉZET
+    # -------------------------------------------------------------------------
     if len(results) == 1:
         cell_name, result = results[0]
+
+        # Szűrési státusz megjelenítése a fejlécben
+        filter_status_html = ""
+        if result.passes_filter is True:
+            filter_status_html = '<span style="color:#2a7f4f;font-size:0.85rem;font-weight:600;">Passes filter</span>'
+        elif result.passes_filter is False:
+            filter_status_html = '<span style="color:#c0392b;font-size:0.85rem;font-weight:600;">Filtered out</span>'
 
         st.markdown(f"""
         <div class="page-header">
             <h1>{cell_name}</h1>
-            <p>Single cell analysis</p>
+            <p>Single cell analysis &nbsp; {filter_status_html}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        # Felső összefoglaló kártyák
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Soma location", result.soma_region_name)
@@ -361,15 +501,35 @@ if 'results' in st.session_state and st.session_state['results']:
 
         st.divider()
 
-        # Célterületek részletes eredménye — egyedi HTML kártyákkal
+        # Célterületek eredménykártyái - részletes endpoint/branch bontással
         st.markdown("**Target Region Results**")
         for tr in result.target_results:
-            if tr.projects_here:
+            cr = saved_criteria.get(tr.region_id, FilterCriteria())
+            # A kártya piros ha szűrés volt aktív és a sejt nem felel meg erre a régióra
+            fails_this = filter_was_active and not cr.check(tr)
+
+            if fails_this:
+                st.markdown(f"""
+                <div class="result-card filtered-out">
+                    <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
+                    <span class="tag-filtered">Does not meet criteria</span>
+                    <span class="meta">
+                        Endpoints: {tr.endpoint_count} &nbsp;|&nbsp;
+                        Branch points: {tr.branch_point_count} &nbsp;|&nbsp;
+                        Axon: {tr.axon_length_um:,.1f} µm
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+            elif tr.projects_here:
                 st.markdown(f"""
                 <div class="result-card positive">
                     <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
                     <span class="tag-yes">Projection confirmed</span>
-                    <span class="meta">{tr.projection_point_count} projection points &nbsp;|&nbsp; {tr.axon_length_um:,.1f} µm axon in region</span>
+                    <span class="meta">
+                        Endpoints: {tr.endpoint_count} &nbsp;|&nbsp;
+                        Branch points: {tr.branch_point_count} &nbsp;|&nbsp;
+                        Axon: {tr.axon_length_um:,.1f} µm
+                    </span>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -390,12 +550,13 @@ if 'results' in st.session_state and st.session_state['results']:
                 {
                     "Region": r.region_name,
                     "Region ID": r.region_id,
-                    "Projection points": r.projection_point_count,
+                    "Endpoints": r.endpoint_count,
+                    "Branch points": r.branch_point_count,
                     "Axon length (µm)": round(r.axon_length_um, 1)
                 }
                 for r in result.other_projection_regions
             ])
-            st.dataframe(other_df, width='stretch', hide_index=True)
+            st.dataframe(other_df, use_container_width=True, hide_index=True)
 
         st.divider()
 
@@ -414,8 +575,15 @@ if 'results' in st.session_state and st.session_state['results']:
                 )
             show_plot_local(plotter)
 
-    # --- BATCH NÉZET (több sejt) ---
+    # -------------------------------------------------------------------------
+    # BATCH NÉZET
+    # -------------------------------------------------------------------------
     else:
+        # Megszámoljuk a szűrést átmenő és kieső sejteket
+        passed = sum(1 for _, r in results if r.passes_filter is True)
+        failed = sum(1 for _, r in results if r.passes_filter is False)
+        unfiltered = sum(1 for _, r in results if r.passes_filter is None)
+
         st.markdown(f"""
         <div class="page-header">
             <h1>Batch Results</h1>
@@ -423,27 +591,47 @@ if 'results' in st.session_state and st.session_state['results']:
         </div>
         """, unsafe_allow_html=True)
 
-        # Összesített táblázat
-        summary_df = results_to_dataframe(results, selected_region_ids, dictionary)
-        st.dataframe(summary_df, width='stretch', hide_index=True)
+        # Összesítő metrikák
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total cells", len(results))
+        if filter_was_active:
+            col2.metric("Pass filter", passed)
+            col3.metric("Filtered out", failed)
+        else:
+            col2.metric("Cells with projections",
+                        sum(1 for _, r in results
+                            if any(tr.projects_here for tr in r.target_results)))
+        col4.metric("Load errors", len(st.session_state.get('errors', [])))
 
-        # Letöltési gomb CSV-ként
+        st.divider()
+
+        # Teljes eredménytáblázat
+        summary_df = results_to_dataframe(results, selected_region_ids, dictionary)
+
+        # Ha volt szűrés, a passes_filter oszlop alapján rendezzük
+        if filter_was_active:
+            summary_df = summary_df.sort_values('passes_filter', ascending=False)
+
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
         csv_data = summary_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Download results as CSV",
             data=csv_data,
             file_name="palyakoveto_batch_results.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
+            key="btn_download_csv"
         )
 
         st.divider()
 
-        # Egyedi sejt részletes nézete
+        # Egyedi sejt részletes nézete a batch-ből
         st.markdown("**Inspect individual cell**")
         inspect_name = st.selectbox(
             "Select a cell to view details",
-            options=[name for name, _ in results]
+            options=[name for name, _ in results],
+            key="batch_inspect_selector"
         )
         if inspect_name:
             _, inspect_result = next(r for r in results if r[0] == inspect_name)
@@ -457,12 +645,23 @@ if 'results' in st.session_state and st.session_state['results']:
             st.markdown("<div style='margin-top:0.8rem;'></div>", unsafe_allow_html=True)
 
             for tr in inspect_result.target_results:
-                if tr.projects_here:
+                cr = saved_criteria.get(tr.region_id, FilterCriteria())
+                fails_this = filter_was_active and not cr.check(tr)
+
+                if fails_this:
+                    st.markdown(f"""
+                    <div class="result-card filtered-out">
+                        <h4>{tr.region_name}</h4>
+                        <span class="tag-filtered">Does not meet criteria</span>
+                        <span class="meta">Endpoints: {tr.endpoint_count} | Branch points: {tr.branch_point_count} | Axon: {tr.axon_length_um:.1f} µm</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif tr.projects_here:
                     st.markdown(f"""
                     <div class="result-card positive">
                         <h4>{tr.region_name}</h4>
                         <span class="tag-yes">Projection confirmed</span>
-                        <span class="meta">{tr.projection_point_count} projection points &nbsp;|&nbsp; {tr.axon_length_um:.1f} µm</span>
+                        <span class="meta">Endpoints: {tr.endpoint_count} | Branch points: {tr.branch_point_count} | Axon: {tr.axon_length_um:.1f} µm</span>
                     </div>
                     """, unsafe_allow_html=True)
                 else:

@@ -1,5 +1,5 @@
 # =============================================================================
-# BETÖLTŐ MODUL - Atlas, szótár és SWC fájlok beolvasása.
+# BETÖLTŐ MODUL - Atlas, szótár, SWC fájlok és soma index kezelése.
 # A Streamlit @st.cache_data dekorátorral az atlas csak egyszer töltődik be,
 # még akkor is, ha a felhasználó újra kattint valamire.
 # =============================================================================
@@ -10,7 +10,7 @@ import pandas as pd
 import nrrd
 import streamlit as st
 
-from config import ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE
+from config import ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE, SOMA_INDEX_PATH
 
 
 @st.cache_resource(show_spinner="Loading atlas... (this only happens once)")
@@ -93,7 +93,6 @@ def get_all_swc_files(base_dir: str) -> dict[str, str]:
     """
     Rekurzívan megkeresi az összes SWC fájlt a megadott mappában.
     A visszaadott szótárban a kulcs a megjelenítési név, az érték a teljes útvonal.
-    Ez a függvény teszi lehetővé, hogy az egér-mappák automatikusan megjelenjenek a UI-ban.
 
     Args:
         base_dir: az alap mappa útvonala ahol az egér-almappák vannak
@@ -106,14 +105,11 @@ def get_all_swc_files(base_dir: str) -> dict[str, str]:
     if not os.path.isdir(base_dir):
         return swc_files
 
-    # Bejárjuk az összes almappát
     for root, dirs, files in os.walk(base_dir):
-        # Rendezzük abc sorrendbe az átláthatóság érdekében
         dirs.sort()
         for filename in sorted(files):
             if filename.lower().endswith('.swc'):
                 full_path = os.path.join(root, filename)
-                # A megjelenítési névben a base_dir-hez képesti relatív útvonalat mutatjuk
                 relative_path = os.path.relpath(full_path, base_dir)
                 swc_files[relative_path] = full_path
 
@@ -151,3 +147,156 @@ def build_region_search_options(dictionary: pd.DataFrame) -> dict[str, int]:
         display_name = f"{row['safe_name']} ({row['acronym']})"
         options[display_name] = int(row['id'])
     return options
+
+
+# =============================================================================
+# SOMA INDEX - Gyors soma-régió megfeleltetés 12000+ fájlhoz
+# =============================================================================
+
+def soma_index_exists() -> bool:
+    """Visszaadja, hogy létezik-e már a soma index fájl."""
+    return os.path.isfile(SOMA_INDEX_PATH)
+
+
+def load_soma_index() -> pd.DataFrame | None:
+    """
+    Betölti a soma index CSV-t ha létezik.
+    Oszlopok: swc_path (relatív), soma_region_id, soma_region_name
+
+    Returns:
+        DataFrame a soma index adataival, vagy None ha nem létezik a fájl
+    """
+    if not soma_index_exists():
+        return None
+    return pd.read_csv(SOMA_INDEX_PATH, dtype={'soma_region_id': int})
+
+
+def build_soma_index(
+    base_dir: str,
+    atlas_matrix: np.ndarray,
+    dictionary: pd.DataFrame,
+    progress_callback=None
+) -> pd.DataFrame:
+    """
+    Felépíti a soma index táblázatot az összes SWC fájlhoz.
+    Minden SWC-ből csak a soma sort olvassa be (type == 1),
+    ezért sokkal gyorsabb mint a teljes analízis.
+
+    A kész index CSV-be mentődik SOMA_INDEX_PATH-ra, hogy
+    a következő alkalmazás indításkor azonnal betölthető legyen.
+
+    Args:
+        base_dir: az alap mappa ahol az SWC fájlok vannak
+        atlas_matrix: az Allen Brain Atlas 3D mátrixa
+        dictionary: régió szótár DataFrame
+        progress_callback: opcionális függvény(current, total, filename) a haladás jelzéséhez
+
+    Returns:
+        DataFrame az elkészült soma indexszel
+    """
+    max_x, max_y, max_z = atlas_matrix.shape
+    all_swc = get_all_swc_files(base_dir)
+    total = len(all_swc)
+
+    rows = []
+    for i, (rel_path, full_path) in enumerate(all_swc.items()):
+        if progress_callback:
+            progress_callback(i, total, rel_path)
+
+        try:
+            # Csak a soma sort olvassuk be - hatékonyabb mint az egész fájl
+            soma_row = _extract_soma_row(full_path)
+
+            if soma_row is not None:
+                sx, sy, sz = soma_row
+                # Voxel koordináták kiszámítása
+                vox_x = int(np.clip(round(sx / VOXEL_SIZE), 0, max_x - 1))
+                vox_y = int(np.clip(round(sy / VOXEL_SIZE), 0, max_y - 1))
+                vox_z = int(np.clip(round(sz / VOXEL_SIZE), 0, max_z - 1))
+                region_id = int(atlas_matrix[vox_x, vox_y, vox_z])
+                region_name_matches = dictionary.loc[
+                    dictionary['id'] == region_id, 'safe_name'
+                ].tolist()
+                region_name = region_name_matches[0] if region_name_matches else "Unknown"
+            else:
+                # Ha nincs type==1 sor a fájlban, ismeretlen soma-t jelzünk
+                region_id = -1
+                region_name = "No soma"
+
+        except Exception:
+            # Sérült vagy érvénytelen SWC fájlok nem állítják meg az indexelést
+            region_id = -1
+            region_name = "Error reading file"
+
+        rows.append({
+            'swc_path': rel_path,
+            'soma_region_id': region_id,
+            'soma_region_name': region_name,
+        })
+
+    index_df = pd.DataFrame(rows)
+
+    # Mentés CSV-be a gyors jövőbeli betöltéshez
+    index_df.to_csv(SOMA_INDEX_PATH, index=False)
+
+    return index_df
+
+
+def _extract_soma_row(filepath: str) -> tuple[float, float, float] | None:
+    """
+    Hatékonyan kinyeri az SWC fájlból a soma (type==1) koordinátáit.
+    Nem olvassa be az egész fájlt - megáll az első type==1 sornál.
+
+    Args:
+        filepath: az SWC fájl teljes útvonala
+
+    Returns:
+        (x, y, z) koordináta tuple, vagy None ha nincs soma sor
+    """
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Komment sorok kihagyása
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 6 and parts[1] == '1':
+                # parts: [id, type, x, y, z, radius, pid]
+                return float(parts[2]), float(parts[3]), float(parts[4])
+    return None
+
+
+def filter_swc_by_soma_region(
+    all_swc: dict[str, str],
+    soma_index: pd.DataFrame,
+    search_text: str
+) -> dict[str, str]:
+    """
+    Szűri az SWC fájlok listáját soma régió neve alapján.
+    A keresés kis-nagybetű érzéketlen, részleges egyezést is elfogad.
+
+    Például: "motor" megtalálja a "Primary motor area Layer 5" régiót is.
+
+    Args:
+        all_swc: az összes SWC fájl szótára {rel_path: full_path}
+        soma_index: a betöltött soma index DataFrame
+        search_text: a keresési szöveg (részleges egyezés)
+
+    Returns:
+        Szűrt SWC fájl szótár
+    """
+    if not search_text.strip():
+        return all_swc
+
+    search_lower = search_text.strip().lower()
+
+    # Megkeressük azokat a rel_path értékeket, ahol a soma régió neve illeszkedik
+    matching_paths = soma_index.loc[
+        soma_index['soma_region_name'].str.lower().str.contains(
+            search_lower, na=False, regex=False
+        ),
+        'swc_path'
+    ].tolist()
+
+    matching_set = set(matching_paths)
+    return {k: v for k, v in all_swc.items() if k in matching_set}

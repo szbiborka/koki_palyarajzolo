@@ -8,7 +8,7 @@ A browser-based research tool for analyzing and visualizing neuron projections i
 
 Most publicly available tools (including some well-known online databases) count a neuron as projecting to a brain region simply because its axon passes through that region. This leads to a lot of false positives, especially for neurons with long-range axons that cross many structures on their way to their actual targets.
 
-Pátyakovető takes a stricter approach: a neuron is only considered to project to a region if it has an **endpoint** or **branch point** located within that region. Axons that merely pass through are ignored. This is a more anatomically meaningful definition of a projection, and it's the main reason this tool exists.
+Pályakövető takes a stricter approach: a neuron is only considered to project to a region if it has an **endpoint** or **branch point** located within that region. Axons that merely pass through are ignored. This is a more anatomically meaningful definition of a projection, and it's the main reason this tool exists.
 
 On top of that, you can set your own numerical thresholds — requiring a minimum number of endpoints, branch points, or a minimum axon length within a region — so you can tune the definition of "projection" to whatever your experiment calls for.
 

@@ -1,59 +1,161 @@
 # =============================================================================
-# VIZUALIZÁCIÓ MODUL - 3D ábra generálása PyVista-val.
-# Jelenleg lokálisan fut (plotter.show()), de a to_trame() metódus
-# egyszerűen cserélhető szerver-kompatibilis Trame megjelenítésre.
+# VIZUALIZÁCIÓ MODUL - 3D ábra generálása Plotly-val.
+#
+# Miért Plotly és nem PyVista/stpyvista?
+#   - Plotly WebGL-t használ, natívan fut a böngészőben
+#   - st.plotly_chart() azonnal működik mindenkin – nincs Xvfb, nincs VTK.js,
+#     nincs stpyvista widget cache bug, nincs Kitware fallback oldal
+#   - A go.Mesh3d az agyi struktúrák félig átlátszó felszínéhez
+#   - A go.Scatter3d mode='lines' az axon vonalakhoz (None szeparátorral
+#     egy trace-ben, ami nagyon hatékony nagy neuronoknál)
+#   - A go.Scatter3d mode='markers' a somához és vetítési pontokhoz
+#
+# Fő függvények:
+#   build_3d_plot()       - egyetlen sejt vizualizációja
+#   build_3d_plot_multi() - több sejt egyszerre (batch)
+#   render_plot_streamlit() - st.plotly_chart() wrapper (app.py hívja)
 # =============================================================================
 
 import numpy as np
-import pyvista as pv
+import plotly.graph_objects as go
 from skimage.measure import marching_cubes
 
 from config import (
-    VOXEL_SIZE, VIZ_REGION_OPACITY, VIZ_SOMA_RADIUS,
-    VIZ_POINT_SIZE, VIZ_AXON_LINE_WIDTH, VIZ_MARCHING_CUBES_STEP, COLORS
+    VOXEL_SIZE, VIZ_REGION_OPACITY, VIZ_MARCHING_CUBES_STEP, COLORS
 )
 from core.analysis import CellAnalysisResult
 
 
-def _build_isosurface(mask: np.ndarray) -> pv.PolyData | None:
+# =============================================================================
+# BELSŐ SEGÉDFÜGGVÉNYEK
+# =============================================================================
+
+def _get_region_color(region_index: int) -> str:
+    """Körkörösen hozzárendel egy hex színt a régió indexe alapján."""
+    palette = COLORS['region_palette']
+    return palette[region_index % len(palette)]
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     """
-    Marching cubes algoritmussal egy bináris maszkból 3D felszínt generál.
-    Ha a maszk üres, None-t ad vissza.
+    Hex színt rgba() stringgé alakít Plotly opacity kezeléséhez.
+    Pl. '#1f77b4', 0.25  ->  'rgba(31,119,180,0.25)'
+    """
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
+
+def _build_mesh_trace(
+    mask: np.ndarray,
+    color: str,
+    opacity: float,
+    name: str,
+    showlegend: bool = True,
+) -> go.Mesh3d | None:
+    """
+    Marching cubes-szal épít egy Plotly Mesh3d trace-t egy bináris maszkból.
+    Ez az agyi struktúrák félig átlátszó felszínéhez kell.
 
     Args:
-        mask: 3D bináris numpy tömb (True ahol a régió van)
+        mask:       3D bináris numpy tömb (True ahol a régió van)
+        color:      hex szín string
+        opacity:    0.0 - 1.0 közötti átlátszóság
+        name:       a legendában megjelenő név
+        showlegend: szerepeljen-e a legendában
 
     Returns:
-        PyVista PolyData mesh, vagy None ha a maszk üres
+        go.Mesh3d trace, vagy None ha a maszk üres
     """
     if not np.any(mask):
         return None
 
-    # A marching_cubes pixelkoordinátákban adja vissza a csúcsokat,
-    # ezért szorzunk voxel_size-zal hogy mikrométeres koordinátákat kapjunk
     verts, faces, _, _ = marching_cubes(mask, level=0.5, step_size=VIZ_MARCHING_CUBES_STEP)
-    verts = verts * VOXEL_SIZE
+    verts = verts * VOXEL_SIZE  # pixelkoordináták -> mikrométer
 
-    # PyVista speciális face formátuma: [vertex_szám, p1, p2, p3, ...]
-    padding = np.full((len(faces), 1), 3)
-    faces_pv = np.hstack((padding, faces)).flatten()
+    return go.Mesh3d(
+        x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+        i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+        color=color,
+        opacity=opacity,
+        name=name,
+        showlegend=showlegend,
+        # flatshading=False -> simított felület (Gouraud shading)
+        lighting=dict(ambient=0.5, diffuse=0.8, specular=0.2, roughness=0.5),
+        lightposition=dict(x=100, y=200, z=150),
+        hoverinfo='name',
+    )
 
-    return pv.PolyData(verts, faces_pv)
 
-
-def _get_region_color(region_index: int) -> str:
+def _build_axon_trace(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    curr_idx: np.ndarray,
+    parent_row_indices: np.ndarray,
+    is_axon: np.ndarray,
+    point_regions: np.ndarray,
+    region_color_map: dict[int, str],
+    line_width: int = 2,
+) -> list[go.Scatter3d]:
     """
-    Körkörösen hozzárendel egy színt a régió indexe alapján a palettából.
+    Felépíti az axon vonalakat Plotly Scatter3d trace-ként.
+
+    Plotly-ban a vonalakat úgy rajzoljuk hatékonyan, hogy None szeparátorokat
+    szúrunk a szegmensek közé egyetlen trace-ben. Ez sokkal gyorsabb mint
+    szegmensenként külön trace – egy 10 000 pontos neuronoknál is villámgyors.
+
+    Szín szerint csoportosítunk: minden egyedi szín egy trace lesz,
+    hogy a legendában külön szerepeljenek (ha szükséges).
 
     Args:
-        region_index: a régió sorszáma (0-tól indexelt)
+        x, y, z:              SWC koordináták (mikrométerben)
+        curr_idx:             érvényes csomópontok indexei (parent_row_indices != -1)
+        parent_row_indices:   minden pont szülőjének indexe
+        is_axon:              boolean maszk – melyik pont axon típusú
+        point_regions:        minden pont melyik atlasz régióba esik
+        region_color_map:     régió ID -> hex szín szótár
+        line_width:           vonal vastagság pixelben
 
     Returns:
-        Hex szín string
+        Lista go.Scatter3d trace objektumokból (egy trace per egyedi szín)
     """
-    palette = COLORS['region_palette']
-    return palette[region_index % len(palette)]
+    # Szín szerint gyűjtjük a szegmenseket
+    # Minden szegmens: (pont_a_xyz, pont_b_xyz)
+    segments_by_color: dict[str, tuple[list, list, list]] = {}
+    # Struktúra: {color: (xs, ys, zs)} ahol None szeparátorral vannak elválasztva
 
+    for i in curr_idx:
+        if not is_axon[i]:
+            continue
+        p_row = parent_row_indices[i]
+        color = region_color_map.get(int(point_regions[i]), COLORS['axon_default'])
+
+        if color not in segments_by_color:
+            segments_by_color[color] = ([], [], [])
+
+        xs, ys, zs = segments_by_color[color]
+        # Két pont + None szeparátor = egy szegmens a Plotly vonalban
+        xs.extend([x[i], x[p_row], None])
+        ys.extend([y[i], y[p_row], None])
+        zs.extend([z[i], z[p_row], None])
+
+    traces = []
+    for color, (xs, ys, zs) in segments_by_color.items():
+        traces.append(go.Scatter3d(
+            x=xs, y=ys, z=zs,
+            mode='lines',
+            line=dict(color=color, width=line_width),
+            hoverinfo='skip',
+            showlegend=False,  # Az axon vonalaknak nincs külön legenda sor
+        ))
+
+    return traces
+
+
+# =============================================================================
+# FŐ PLOT ÉPÍTŐK
+# =============================================================================
 
 def build_3d_plot(
     result: CellAnalysisResult,
@@ -61,144 +163,156 @@ def build_3d_plot(
     cell_name: str = "",
     show_soma_region: bool = True,
     show_other_regions: bool = True,
-) -> pv.Plotter:
+) -> go.Figure:
     """
-    Felépíti a teljes 3D vizualizációt egy PyVista Plotter objektumba.
-    A Plotter objektum ezután megjelenítható lokálisan (.show())
-    vagy a jövőben Trame-en keresztül böngészőben is.
+    Egyetlen sejt teljes 3D vizualizációját építi fel Plotly Figure-ként.
+
+    Tartalmazza:
+      - Agyi struktúrák félátlátszó felszínei (Mesh3d)
+      - Teljes axonfa vonalakként, régiónként színezve (Scatter3d lines)
+      - Soma gömbjelölőként (Scatter3d marker)
+      - Vetítési pontok (végpontok + elágazások) kiemelve (Scatter3d marker)
 
     Args:
-        result: a run_analysis() által visszaadott eredmény
-        atlas_matrix: az Allen Brain Atlas 3D mátrixa
-        cell_name: a sejt neve a cím sorában
-        show_soma_region: megjelenítse-e a soma régióját
-        show_other_regions: megjelenítse-e az egyéb célterületeket
+        result:             run_analysis() eredménye
+        atlas_matrix:       Allen Brain Atlas 3D annotációs mátrixa
+        cell_name:          megjelenítési név a cím sorában
+        show_soma_region:   megjelenítse-e a soma régió felszínét
+        show_other_regions: megjelenítse-e az egyéb vetítési területeket
 
     Returns:
-        Konfigurált pv.Plotter objektum
+        go.Figure – st.plotly_chart()-tal közvetlenül megjeleníthető
     """
     coords = result.coords
     x, y, z = coords['x'], coords['y'], coords['z']
-    is_axon = coords['is_axon']
-    point_regions = coords['point_regions']
-    proj_idx = coords['proj_idx']
-    curr_idx = coords['curr_idx']
+    is_axon        = coords['is_axon']
+    point_regions  = coords['point_regions']
+    proj_idx       = coords['proj_idx']
+    curr_idx       = coords['curr_idx']
     parent_row_indices = coords['parent_row_indices']
-    soma_idx = coords['soma_idx']
+    soma_idx       = coords['soma_idx']
 
-    # Célterületek ID-i és hozzájuk rendelt színek szótára
+    # Célterületek -> szín hozzárendelés
     region_color_map: dict[int, str] = {}
     for i, tr in enumerate(result.target_results):
         region_color_map[tr.region_id] = _get_region_color(i)
 
-    # --- Plotter inicializálása ---
-    plotter = pv.Plotter(window_size=[1024, 768], off_screen=False)
-    plotter.set_background('white')
+    traces: list = []
 
-    # --- 1. Agyterület felszínek (izoszfelszínek) ---
-    # Soma régiója
+    # ------------------------------------------------------------------
+    # 1. Agyi struktúrák felszínei (Mesh3d)
+    # ------------------------------------------------------------------
+
+    # Soma régiója (piros)
     if show_soma_region and result.soma_region_id > 0:
-        mesh = _build_isosurface(atlas_matrix == result.soma_region_id)
-        if mesh:
-            plotter.add_mesh(
-                mesh, color='red', opacity=VIZ_REGION_OPACITY,
-                smooth_shading=True, label=f'Soma region: {result.soma_region_name}'
-            )
+        t = _build_mesh_trace(
+            atlas_matrix == result.soma_region_id,
+            color='#c0392b',
+            opacity=VIZ_REGION_OPACITY,
+            name=f'Soma region: {result.soma_region_name}',
+        )
+        if t:
+            traces.append(t)
 
     # Célterületek felszínei
     for tr in result.target_results:
         color = region_color_map[tr.region_id]
-        mesh = _build_isosurface(atlas_matrix == tr.region_id)
-        if mesh:
-            label = f'{tr.region_name} {"✓ projection" if tr.projects_here else "(no projection)"}'
-            plotter.add_mesh(
-                mesh, color=color, opacity=VIZ_REGION_OPACITY,
-                smooth_shading=True, label=label
-            )
+        proj_symbol = '✓' if tr.projects_here else '✗'
+        t = _build_mesh_trace(
+            atlas_matrix == tr.region_id,
+            color=color,
+            opacity=VIZ_REGION_OPACITY,
+            name=f'{proj_symbol} {tr.region_name}',
+        )
+        if t:
+            traces.append(t)
 
-    # Egyéb vetítési területek (ha be van kapcsolva)
+    # Egyéb vetítési területek (halványabban)
     if show_other_regions:
-        existing_ids = {tr.region_id for tr in result.target_results}
-        existing_ids.add(result.soma_region_id)
         for i, other in enumerate(result.other_projection_regions):
             color = _get_region_color(len(result.target_results) + i)
             region_color_map[other.region_id] = color
-            mesh = _build_isosurface(atlas_matrix == other.region_id)
-            if mesh:
-                plotter.add_mesh(
-                    mesh, color=color, opacity=VIZ_REGION_OPACITY * 0.7,
-                    smooth_shading=True, label=f'{other.region_name} (other target)'
-                )
-
-    # --- 2. Axon vonalak ---
-    # A vonalakat összegyűjtjük és egyszerre adjuk hozzá a hatékonyság érdekében
-    # Szín szerint csoportosítva (egy add_mesh hívás per szín)
-    line_segments_by_color: dict[str, list] = {}
-
-    for i in curr_idx:
-        if not is_axon[i]:
-            continue
-
-        p_row = parent_row_indices[i]
-        point_a = np.array([x[i], y[i], z[i]])
-        point_b = np.array([x[p_row], y[p_row], z[p_row]])
-
-        # Szín meghatározása: ha a pont egy célterületen van, annak a színe
-        region = point_regions[i]
-        color = region_color_map.get(int(region), COLORS['axon_default'])
-
-        if color not in line_segments_by_color:
-            line_segments_by_color[color] = []
-        line_segments_by_color[color].append((point_a, point_b))
-
-    # Hatékony vonalrajzolás: minden szín esetén egy PolyData objektum
-    for color, segments in line_segments_by_color.items():
-        if not segments:
-            continue
-
-        # PyVista vonal formátum: [2, idx_a, idx_b, 2, idx_c, idx_d, ...]
-        points_list = []
-        lines_list = []
-        idx = 0
-        for pt_a, pt_b in segments:
-            points_list.extend([pt_a, pt_b])
-            lines_list.extend([2, idx, idx + 1])
-            idx += 2
-
-        poly = pv.PolyData()
-        poly.points = np.array(points_list)
-        poly.lines = np.array(lines_list)
-        plotter.add_mesh(poly, color=color, line_width=VIZ_AXON_LINE_WIDTH)
-
-    # --- 3. Soma gömb ---
-    if soma_idx is not None:
-        soma_sphere = pv.Sphere(
-            radius=VIZ_SOMA_RADIUS,
-            center=(x[soma_idx], y[soma_idx], z[soma_idx])
-        )
-        plotter.add_mesh(soma_sphere, color=COLORS['soma'], label='Soma')
-
-    # --- 4. Vetítési pontok (végpontok és elágazások) ---
-    for tr in result.target_results:
-        region_pts = proj_idx[point_regions[proj_idx] == tr.region_id]
-        if len(region_pts) > 0:
-            points = np.column_stack((x[region_pts], y[region_pts], z[region_pts]))
-            color = region_color_map[tr.region_id]
-            plotter.add_points(
-                points, color=color,
-                point_size=VIZ_POINT_SIZE,
-                render_points_as_spheres=True
+            t = _build_mesh_trace(
+                atlas_matrix == other.region_id,
+                color=color,
+                opacity=VIZ_REGION_OPACITY * 0.6,
+                name=f'(other) {other.region_name}',
             )
+            if t:
+                traces.append(t)
 
-    # --- 5. Kamera és tengelyek ---
-    plotter.camera.up = (0, -1, 0)
-    plotter.show_axes()
-    plotter.add_legend(bcolor='white', border=True)
+    # ------------------------------------------------------------------
+    # 2. Axon vonalak
+    # ------------------------------------------------------------------
+    axon_traces = _build_axon_trace(
+        x, y, z, curr_idx, parent_row_indices,
+        is_axon, point_regions, region_color_map,
+        line_width=2,
+    )
+    traces.extend(axon_traces)
 
-    title = f'Cell: {cell_name}\nSoma: {result.soma_region_name}'
-    plotter.add_title(title, font_size=10)
+    # ------------------------------------------------------------------
+    # 3. Soma jelölő (fekete gömb)
+    # ------------------------------------------------------------------
+    if soma_idx is not None:
+        traces.append(go.Scatter3d(
+            x=[x[soma_idx]], y=[y[soma_idx]], z=[z[soma_idx]],
+            mode='markers',
+            marker=dict(size=8, color='black', symbol='circle'),
+            name='Soma',
+            hovertext=f'Soma<br>{result.soma_region_name}',
+            hoverinfo='text',
+        ))
 
-    return plotter
+    # ------------------------------------------------------------------
+    # 4. Vetítési pontok (végpontok + elágazások régiónként)
+    # ------------------------------------------------------------------
+    for tr in result.target_results:
+        pts = proj_idx[point_regions[proj_idx] == tr.region_id]
+        if len(pts) == 0:
+            continue
+        color = region_color_map[tr.region_id]
+        traces.append(go.Scatter3d(
+            x=x[pts], y=y[pts], z=z[pts],
+            mode='markers',
+            marker=dict(size=5, color=color, symbol='diamond',
+                        line=dict(color='white', width=0.5)),
+            name=f'Proj. pts: {tr.region_name}',
+            hovertext=[f'{tr.region_name}<br>ep/branch' for _ in pts],
+            hoverinfo='text',
+        ))
+
+    # ------------------------------------------------------------------
+    # 5. Figure összerakása
+    # ------------------------------------------------------------------
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=dict(
+            text=f'<b>{cell_name}</b>  |  Soma: {result.soma_region_name}',
+            font=dict(size=13, color='#33401F'),
+            x=0.01,
+        ),
+        scene=dict(
+            xaxis=dict(title='X (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            yaxis=dict(title='Y (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            zaxis=dict(title='Z (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            aspectmode='data',  # arányos tengelyek – nem nyújtja el az agyat
+        ),
+        legend=dict(
+            bgcolor='rgba(255,255,255,0.85)',
+            bordercolor='#CFD6BC',
+            borderwidth=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+        paper_bgcolor='white',
+        height=650,
+    )
+
+    return fig
 
 
 def build_3d_plot_multi(
@@ -206,120 +320,145 @@ def build_3d_plot_multi(
     atlas_matrix: np.ndarray,
     target_region_ids: list[int],
     show_target_regions: bool = True,
-) -> pv.Plotter:
+) -> go.Figure:
     """
-    Több sejtet jelenít meg egyszerre egy 3D ábrán - batch összehasonlításhoz.
-    Minden sejt saját színt kap (szóma + teljes axonfa), így könnyen
-    megkülönböztethetők egymástól. A célterületek félig átlátszó
-    felszínként jelennek meg háttérként, csak egyszer felépítve
-    (nem sejtenként újra).
+    Több sejtet jelenít meg egyszerre – batch összehasonlításhoz.
+
+    Minden sejt saját színt kap (axon + soma), a célterületek
+    félig átlátszó felszínként jelennek meg háttérként.
 
     Args:
-        results: lista (sejt_név, CellAnalysisResult) párokból
-        atlas_matrix: az Allen Brain Atlas 3D mátrixa
-        target_region_ids: a vizsgált célterületek ID listája
+        results:             lista (sejt_név, CellAnalysisResult) párokból
+        atlas_matrix:        Allen Brain Atlas 3D mátrixa
+        target_region_ids:   a vizsgált célterületek ID listája
         show_target_regions: megjelenítse-e a célterületek felszíneit
 
     Returns:
-        Konfigurált pv.Plotter objektum, az összes sejttel egyszerre
+        go.Figure – st.plotly_chart()-tal közvetlenül megjeleníthető
     """
-    # Régió nevek kinyerése az első eredményből (mindegyik ugyanazokkal
-    # a célterületekkel futott, ezért elég egyszer megnézni)
+    palette = COLORS['region_palette']
+
+    # Régió nevek az első eredményből (mindegyik ugyanazokkal futott)
     region_names: dict[int, str] = {}
     if results:
         for tr in results[0][1].target_results:
             region_names[tr.region_id] = tr.region_name
 
-    plotter = pv.Plotter(window_size=[1200, 850], off_screen=False)
-    plotter.set_background('white')
+    traces: list = []
 
-    # --- 1. Célterület felszínek (egyszer épülnek fel) ---
+    # ------------------------------------------------------------------
+    # 1. Célterület felszínek (egyszer épülnek fel)
+    # ------------------------------------------------------------------
     if show_target_regions:
         for i, region_id in enumerate(target_region_ids):
-            mesh = _build_isosurface(atlas_matrix == region_id)
-            if mesh:
-                color = _get_region_color(i)
-                label = region_names.get(region_id, f"Region {region_id}")
-                plotter.add_mesh(
-                    mesh, color=color, opacity=VIZ_REGION_OPACITY * 0.6,
-                    smooth_shading=True, label=label
-                )
+            color = _get_region_color(i)
+            name = region_names.get(region_id, f'Region {region_id}')
+            t = _build_mesh_trace(
+                atlas_matrix == region_id,
+                color=color,
+                opacity=VIZ_REGION_OPACITY * 0.55,
+                name=name,
+            )
+            if t:
+                traces.append(t)
 
-    # --- 2. Minden sejt saját színt kap a palettából, körkörösen ---
-    palette = COLORS['region_palette']
-
+    # ------------------------------------------------------------------
+    # 2. Minden sejt saját szín
+    # ------------------------------------------------------------------
     for i, (cell_name, result) in enumerate(results):
         cell_color = palette[i % len(palette)]
         coords = result.coords
         x, y, z = coords['x'], coords['y'], coords['z']
-        is_axon = coords['is_axon']
-        curr_idx = coords['curr_idx']
+        is_axon            = coords['is_axon']
+        curr_idx           = coords['curr_idx']
         parent_row_indices = coords['parent_row_indices']
-        soma_idx = coords['soma_idx']
+        soma_idx           = coords['soma_idx']
+        point_regions      = coords['point_regions']
 
-        # Axon vonalak ehhez a sejthez - egy PolyData az egész fához,
-        # ugyanúgy mint a single-cell nézetben, hatékonyság miatt
-        points_list = []
-        lines_list = []
-        idx = 0
-        for j in curr_idx:
-            if not is_axon[j]:
-                continue
-            p_row = parent_row_indices[j]
-            points_list.append([x[j], y[j], z[j]])
-            points_list.append([x[p_row], y[p_row], z[p_row]])
-            lines_list.extend([2, idx, idx + 1])
-            idx += 2
+        # Egyforma szín az egész sejthez (nincs régió-alapú színezés batch-ben)
+        uniform_color_map = {int(rid): cell_color for rid in np.unique(point_regions)}
 
-        if points_list:
-            poly = pv.PolyData()
-            poly.points = np.array(points_list)
-            poly.lines = np.array(lines_list)
-            plotter.add_mesh(poly, color=cell_color, line_width=VIZ_AXON_LINE_WIDTH)
+        axon_traces = _build_axon_trace(
+            x, y, z, curr_idx, parent_row_indices,
+            is_axon, point_regions, uniform_color_map,
+            line_width=1,
+        )
+        # A legendában csak az első trace-nek legyen neve (különben minden
+        # szín-variáns megjelenne és elárasztaná a legendát)
+        for j, tr in enumerate(axon_traces):
+            if j == 0:
+                tr.showlegend = True
+                tr.name = cell_name
+            traces.append(tr)
 
-        # Szóma pötty - ugyanazzal a színnel mint az axonfa
+        # Soma jelölő
         if soma_idx is not None:
-            soma_sphere = pv.Sphere(
-                radius=VIZ_SOMA_RADIUS,
-                center=(x[soma_idx], y[soma_idx], z[soma_idx])
-            )
-            plotter.add_mesh(soma_sphere, color=cell_color)
+            traces.append(go.Scatter3d(
+                x=[x[soma_idx]], y=[y[soma_idx]], z=[z[soma_idx]],
+                mode='markers',
+                marker=dict(size=7, color=cell_color, symbol='circle',
+                            line=dict(color='white', width=1)),
+                showlegend=False,
+                hovertext=f'{cell_name}<br>Soma: {result.soma_region_name}',
+                hoverinfo='text',
+            ))
 
-    # --- 3. Kamera és tengelyek ---
-    plotter.camera.up = (0, -1, 0)
-    plotter.show_axes()
-    if show_target_regions:
-        plotter.add_legend(bcolor='white', border=True)
-    plotter.add_title(f'Combined view — {len(results)} cells', font_size=10)
+    # ------------------------------------------------------------------
+    # 3. Figure
+    # ------------------------------------------------------------------
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=dict(
+            text=f'<b>Combined view</b>  —  {len(results)} cells',
+            font=dict(size=13, color='#33401F'),
+            x=0.01,
+        ),
+        scene=dict(
+            xaxis=dict(title='X (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            yaxis=dict(title='Y (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            zaxis=dict(title='Z (µm)', backgroundcolor='#f8f8f8',
+                       gridcolor='#dddddd', showbackground=True),
+            aspectmode='data',
+        ),
+        legend=dict(
+            bgcolor='rgba(255,255,255,0.85)',
+            bordercolor='#CFD6BC',
+            borderwidth=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=0, r=0, t=40, b=0),
+        paper_bgcolor='white',
+        height=700,
+    )
 
-    return plotter
+    return fig
 
 
-def show_plot_local(plotter: pv.Plotter) -> None:
+# =============================================================================
+# STREAMLIT RENDERELŐ
+# =============================================================================
+
+def render_plot_streamlit(fig: go.Figure, key: str) -> None:
     """
-    Lokális ablakban jeleníti meg az ábrát (fejlesztéshez, PyCharm-ban).
-    Szerveren ezt a függvényt NEM hívjuk meg.
+    Megjeleníti a Plotly Figure-t a Streamlit oldalon.
+
+    use_container_width=True: kitölti a rendelkezésre álló szélességet.
+    A key nem kötelező Plotly-nál (nincs widget cache bug mint stpyvista-nál),
+    de megtartjuk a konzisztencia kedvéért.
+
+    Args:
+        fig: a build_3d_plot() vagy build_3d_plot_multi() által visszaadott Figure
+        key: egyedi kulcs (opcionális, de jó szokás)
     """
-    plotter.show()
+    import streamlit as st
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
-# =============================================================================
-# TRAME INTEGRÁCIÓ - TODO szerver-kompatibilis megjelenítéshez
-# =============================================================================
-# Amikor a szerverre kerül az alkalmazás, ezt a részt kell implementálni.
-# A build_3d_plot() visszaadja a Plotter-t, és a Trame widget
-# közvetlenül tudja használni azt.
-#
-# Példa (a jövőbeli app.py-ban):
-#
-#   from pyvista.trame.ui import plotter_ui
-#   from trame.app import get_server
-#
-#   server = get_server()
-#   plotter = build_3d_plot(result, atlas_matrix, cell_name)
-#   with SinglePageLayout(server) as layout:
-#       with layout.content:
-#           with vuetify.VContainer():
-#               view = plotter_ui(plotter)
-#   server.start()
-# =============================================================================
+def show_plot_local(fig: go.Figure) -> None:
+    """
+    Lokálisan nyitja meg az ábrát a böngészőben (fejlesztéshez).
+    Szerveren vagy Streamlit-ben NEM hívjuk ezt – ott render_plot_streamlit() kell.
+    """
+    fig.show()

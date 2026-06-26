@@ -18,13 +18,13 @@ from core.loader import (
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria
 )
-from core.visualization import build_3d_plot, build_3d_plot_multi, show_plot_local
+from core.visualization import build_3d_plot, build_3d_plot_multi, render_plot_streamlit
 
 # =============================================================================
 # OLDAL KONFIGURÁCIÓ
 # =============================================================================
 st.set_page_config(
-    page_title="Palyakoveto — Neuron Projection Analyzer",
+    page_title="Pályakövető — Neuron Projection Analyzer",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -245,6 +245,7 @@ NEURON_MARK = """
 # =============================================================================
 # GLOBÁLIS ADATOK BETÖLTÉSE
 # =============================================================================
+
 try:
     atlas_matrix, atlas_header = load_atlas()
     dictionary = load_dictionary()
@@ -259,7 +260,7 @@ all_swc = get_all_swc_files(BASE_DATA_DIR)
 # OLDALSÁV
 # =============================================================================
 with st.sidebar:
-    st.markdown(f'<div class="sidebar-title">{NEURON_MARK}Palyakoveto</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sidebar-title">{NEURON_MARK}Pályakövető</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Neuron Projection Analyzer — KOKI</div>', unsafe_allow_html=True)
     st.divider()
 
@@ -361,9 +362,11 @@ with st.sidebar:
                          help="Scans all SWC files to find soma regions. Takes a few minutes."):
                 progress_bar = st.progress(0, text="Building soma index...")
 
+
                 def update_progress(current, total, filename):
                     pct = current / total if total > 0 else 0
                     progress_bar.progress(pct, text=f"Indexing: {filename}")
+
 
                 with st.spinner("Building soma index..."):
                     build_soma_index(BASE_DATA_DIR, atlas_matrix, dictionary, update_progress)
@@ -673,17 +676,23 @@ if 'results' in st.session_state and st.session_state['results']:
         # 3D vizualizáció
         st.markdown("**3D Visualization**")
         st.caption(
-            "Note: the 3D viewer currently opens in a separate desktop window (PyVista). "
-            "In-browser rendering via Trame will be available in a future version."
+            "Renders directly in your browser - everyone sees their own scene, "
+            "even if multiple people use the app at the same time."
         )
+        # Plotly: a fig session_state-ben él, így a viewer újrarajzolódik
+        # minden rerunon anélkül, hogy újraépítenénk (marching cubes lassú lehet).
+        viewer_key = f"fig_single_{cell_name.replace('/', '_')}"
+
         if st.button("Open 3D Viewer", type="secondary", key="btn_3d_single"):
             with st.spinner("Building 3D plot..."):
-                plotter = build_3d_plot(
+                st.session_state[viewer_key] = build_3d_plot(
                     result, atlas_matrix, cell_name,
                     show_soma_region=show_soma_region,
                     show_other_regions=show_other_regions
                 )
-            show_plot_local(plotter)
+
+        if viewer_key in st.session_state:
+            render_plot_streamlit(st.session_state[viewer_key], key=viewer_key)
 
     # -------------------------------------------------------------------------
     # BATCH NÉZET
@@ -753,16 +762,18 @@ if 'results' in st.session_state and st.session_state['results']:
         combined_results = results[:max_combined]
 
         if st.button(
-            f"Open combined 3D Viewer — {len(combined_results)} cells",
-            type="secondary",
-            key="btn_3d_combined"
+                f"Open combined 3D Viewer — {len(combined_results)} cells",
+                type="secondary",
+                key="btn_3d_combined"
         ):
             with st.spinner(f"Building combined 3D plot for {len(combined_results)} cells..."):
-                plotter = build_3d_plot_multi(
+                st.session_state["fig_combined"] = build_3d_plot_multi(
                     combined_results, atlas_matrix, selected_region_ids,
                     show_target_regions=True
                 )
-            show_plot_local(plotter)
+
+        if "fig_combined" in st.session_state:
+            render_plot_streamlit(st.session_state["fig_combined"], key="viewer_combined")
 
         st.divider()
 
@@ -812,11 +823,15 @@ if 'results' in st.session_state and st.session_state['results']:
                     </div>
                     """, unsafe_allow_html=True)
 
+            batch_fig_key = f"fig_batch_{inspect_name.replace('/', '_')}"
+
             if st.button("Open 3D Viewer for this cell", type="secondary", key="btn_3d_batch"):
                 with st.spinner("Building 3D plot..."):
-                    plotter = build_3d_plot(
+                    st.session_state[batch_fig_key] = build_3d_plot(
                         inspect_result, atlas_matrix, inspect_name,
                         show_soma_region=show_soma_region,
                         show_other_regions=show_other_regions
                     )
-                show_plot_local(plotter)
+
+            if batch_fig_key in st.session_state:
+                render_plot_streamlit(st.session_state[batch_fig_key], key=batch_fig_key)

@@ -26,7 +26,7 @@ from core.visualization import (
 # PAGE CONFIGURATION & CSS
 # =============================================================================
 st.set_page_config(
-    page_title="Pályakövető — Neuron Projection Analyzer",
+    page_title="Palyakoveto — Neuron Projection Analyzer",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -223,6 +223,15 @@ SYNAPSE_MARK = """
 </svg>
 """
 
+# Display label -> internal operator code for the per-region projection rule.
+# Kept as an explicit mapping (rather than parsing substrings of the label)
+# so the displayed wording can change freely without touching the logic.
+RULE_OPERATORS = {
+    "Required (AND)": "AND",
+    "Excluded (NOT)": "NOT",
+    "Optional (OR)": "OR",
+}
+
 
 def section_header(title: str):
     """Generates a custom formatted subheader with the SYNAPSE_MARK icon."""
@@ -267,7 +276,7 @@ with st.sidebar:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # 2. Filter Criteria
+    # 2. Filter Criteria & Logic (AND/OR/NOT)
     # -------------------------------------------------------------------------
     st.markdown("**Projection Filter Criteria**",
                 help="Define what counts as a valid projection. If a cell's axon passes through the area but does not meet these minimums, it will be marked as 'Filtered out'.")
@@ -282,25 +291,50 @@ with st.sidebar:
             short_name = region_name_full.split('(')[-1].replace(')', '').strip()
 
             with st.expander(f"Filters for {short_name}", expanded=False):
+                st.markdown(
+                    "<div style='font-size:0.78rem;font-weight:700;letter-spacing:0.04em;"
+                    "text-transform:uppercase;color:var(--taupe-deep);margin-bottom:0.3rem;'>"
+                    "Condition Rule</div>",
+                    unsafe_allow_html=True
+                )
+                rule_label = st.radio(
+                    label="Condition rule",
+                    options=list(RULE_OPERATORS.keys()),
+                    horizontal=True,
+                    help=(
+                        "Required: the cell must project here for the thresholds below to be "
+                        "evaluated. Excluded: the cell is disqualified if it projects here at "
+                        "all. Optional: satisfying this region counts toward an OR-combination "
+                        "with other Optional regions, but is not mandatory on its own."
+                    ),
+                    key=f"filter_rule_{region_id}",
+                    label_visibility="collapsed",
+                )
+                op = RULE_OPERATORS[rule_label]
+
                 min_ep = st.number_input(
                     "Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
-                    help=f"At least this many axon endpoints must fall within the {short_name} region for the projection to be considered valid. Filters out accidentally crossing branches.",
+                    help=f"At least this many axon endpoints must fall within the {short_name} region for the projection to be considered valid.",
                     key=f"filter_ep_{region_id}"
                 )
                 min_br = st.number_input(
                     "Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'], step=1,
-                    help="At least this many branch points (nodes with >1 children) are required within the region. This indicates dense arborization.",
+                    help="At least this many branch points are required within the region.",
                     key=f"filter_br_{region_id}"
                 )
                 min_len = st.number_input(
                     "Min. axon length (µm)", min_value=0.0, value=float(DEFAULT_FILTER['min_axon_length_um']),
                     step=10.0,
-                    help="Minimum total length of axon segments within the target region, in micrometers.",
+                    help="Minimum total length of axon segments within the target region.",
                     key=f"filter_len_{region_id}"
                 )
-                criteria_per_region[region_id] = FilterCriteria(min_endpoints=int(min_ep),
-                                                                min_branch_points=int(min_br),
-                                                                min_axon_length_um=float(min_len))
+
+                criteria_per_region[region_id] = FilterCriteria(
+                    min_endpoints=int(min_ep),
+                    min_branch_points=int(min_br),
+                    min_axon_length_um=float(min_len),
+                    operator=op  # Átadjuk az operátort a backendnek
+                )
 
     st.divider()
 
@@ -357,27 +391,47 @@ with st.sidebar:
                                          help="Select the specific SWC file for analysis.", key="single_cell_selector")
             selected_swc_paths = [filtered_swc[selected_name]] if filtered_swc else []
         else:
-            use_all_matches = st.checkbox(f"Use all {len(filtered_swc)} matched cells", value=True,
-                                          help="If checked, the program will automatically run the batch analysis on all matched cells.") if soma_search and len(
-                filtered_swc) < len(all_swc) else False
+            st.markdown(f"**{len(filtered_swc)} cells available for batch analysis.**")
 
-            if use_all_matches:
+            batch_method = st.radio(
+                "Selection method",
+                options=["Analyze ALL matched cells", "Select specific cells manually"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+
+            if batch_method == "Analyze ALL matched cells":
                 selected_swc_paths = list(filtered_swc.values())
+                st.info(f"Ready to analyze all **{len(selected_swc_paths)}** cells. Click 'Run Analysis' below.")
             else:
-                selected_names = st.multiselect("Select cells manually", options=list(filtered_swc.keys()),
-                                                help="Select multiple cells. A maximum of 50-60 is recommended for joint 3D rendering.",
-                                                key="batch_selector")
+                selected_names = st.multiselect(
+                    "Select specific cells",
+                    options=list(filtered_swc.keys()),
+                    default=[],
+                    help="Start typing to search. Select only the cells you need. (A maximum of 50-60 is recommended for joint 3D rendering.)",
+                    key="batch_selector"
+                )
                 selected_swc_paths = [filtered_swc[name] for name in selected_names]
+
+                if not selected_swc_paths:
+                    st.warning("Please select at least one cell from the dropdown.")
 
     st.divider()
 
     # -------------------------------------------------------------------------
-    # 4. Visualization Settings
+    # 4. Visualization Settings (With Axon-in-Region)
     # -------------------------------------------------------------------------
     st.markdown("**Visualization Settings**",
                 help="These toggles only affect the appearance of the 3D Plotly scene, not the numerical analysis.")
     show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
     show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
+
+    # --- ÚJ KAPCSOLÓ AZ AXON-IN-REGION NÉZETHEZ ---
+    show_only_target_regions = st.toggle(
+        "Axon-in-region view", value=False,
+        help="If toggled, the system hides all axon branches outside the examined regions, clearing up the visual noise.",
+        key="toggle_exclusive"
+    )
 
 # =============================================================================
 # MAIN CONTENT (TABS LAYOUT)
@@ -388,11 +442,11 @@ if not selected_swc_paths or not selected_region_ids:
     <div class="page-header" style="text-align: center; margin-top: 10vh;">
         <div style="display: flex; justify-content: center; margin-bottom: 20px;">{NEURON_MARK}</div>
         <h1>Palyakoveto</h1>
-        <p>Neuron Projection Analyzer &mdash; KOKI Institute</p>
+        <p>Neuron Projection Analyzer &mdash; HUN-REN KOKI</p>
     </div>
     """, unsafe_allow_html=True)
 
-    st.info("👋 **Welcome!** Please select target brain regions and one or more cell files from the sidebar to begin.")
+    st.info("**Welcome.** Select target brain regions and one or more cell files from the sidebar to begin.")
     st.stop()
 
 # --- Run Button ---
@@ -418,6 +472,8 @@ if run_button:
             swc_df = load_swc(filepath)
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids)
             result = apply_filter(result, criteria_per_region)
+            if len(st.session_state['results']) >= 60:
+                result.coords = {}
             st.session_state['results'].append((cell_name, result))
         except Exception as e:
             st.session_state['errors'].append((cell_name, str(e)))
@@ -426,7 +482,7 @@ if run_button:
 
 # --- Display Results ---
 if 'errors' in st.session_state and st.session_state['errors']:
-    with st.expander(f"⚠️ {len(st.session_state['errors'])} file(s) could not be loaded"):
+    with st.expander(f"{len(st.session_state['errors'])} file(s) could not be loaded"):
         for name, err in st.session_state['errors']:
             st.error(f"**{name}**: {err}")
 
@@ -443,17 +499,19 @@ if 'results' in st.session_state and st.session_state['results']:
     if len(results) == 1:
         cell_name, result = results[0]
 
-        # Create Tabs
         tab_data, tab_3d = st.tabs(["Analytics & Data", "Interactive 3D Viewer"])
 
         with tab_data:
-            filter_status = "✅ Passes filter" if result.passes_filter else (
-                "❌ Filtered out" if result.passes_filter is False else "")
+            if result.passes_filter is True:
+                filter_status = '<span class="tag-yes" style="margin-left:15px;">Passes filter</span>'
+            elif result.passes_filter is False:
+                filter_status = '<span class="tag-filtered" style="margin-left:15px;">Filtered out</span>'
+            else:
+                filter_status = ""
             st.markdown(
-                f"<h3>{cell_name} <span style='font-size:1rem;font-weight:400;color:var(--taupe);margin-left:15px;'>{filter_status}</span></h3>",
+                f"<h3>{cell_name}{filter_status}</h3>",
                 unsafe_allow_html=True)
 
-            # Highlight Metrics
             m1, m2, m3 = st.columns(3)
             m1.metric("Soma location", result.soma_region_name)
             proj_count = sum(1 for tr in result.target_results if tr.projects_here)
@@ -465,9 +523,21 @@ if 'results' in st.session_state and st.session_state['results']:
 
             for tr in result.target_results:
                 cr = saved_criteria.get(tr.region_id, FilterCriteria())
-                fails_this = filter_was_active and not cr.check(tr)
 
-                if fails_this:
+                # Vizsgáljuk, hogy ez a régió egyáltalán "aktív" szűrő-e
+                is_active_rule = cr.is_active() and filter_was_active
+                meets_rule = cr.meets_thresholds(tr)
+
+                # Ha a NOT szűrőt bukja el a sejt, azt külön kiemeljük
+                if is_active_rule and cr.operator == 'NOT' and meets_rule:
+                    st.markdown(f"""
+                    <div class="result-card filtered-out">
+                        <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
+                        <span class="tag-filtered">Violated NOT rule</span>
+                        <div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> &nbsp;|&nbsp; Branch points: <b>{tr.branch_point_count}</b> &nbsp;|&nbsp; Axon: <b>{tr.axon_length_um:,.1f} µm</b></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif is_active_rule and cr.operator == 'AND' and not meets_rule:
                     st.markdown(f"""
                     <div class="result-card filtered-out">
                         <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
@@ -502,12 +572,13 @@ if 'results' in st.session_state and st.session_state['results']:
                 st.dataframe(other_df, use_container_width=True, hide_index=True)
 
         with tab_3d:
-            st.info("💡 **Tip:** Use the left mouse button to rotate, right button to pan, and scroll wheel to zoom.")
+            st.info("**Tip:** Use the left mouse button to rotate, the right button to pan, and the scroll wheel to zoom.")
             with st.spinner("Building interactive 3D plot..."):
                 fig = build_3d_plot(
                     result, atlas_matrix, cell_name,
                     show_soma_region=show_soma_region,
-                    show_other_regions=show_other_regions
+                    show_other_regions=show_other_regions,
+                    show_only_target_regions=show_only_target_regions  # Bepasszoljuk a UI kapcsolót
                 )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -516,7 +587,7 @@ if 'results' in st.session_state and st.session_state['results']:
     # =========================================================================
     else:
         tab_stats, tab_inspector, tab_3d_multi = st.tabs(
-            ["📈 Population Statistics", "🔍 Single Cell Inspector", "🌐 Combined 3D View"])
+            ["Population Statistics", "Single Cell Inspector", "Combined 3D View"])
 
         with tab_stats:
             passed = sum(1 for _, r in results if r.passes_filter is True)
@@ -533,7 +604,38 @@ if 'results' in st.session_state and st.session_state['results']:
             c4.metric("Load errors", len(st.session_state.get('errors', [])))
 
             st.markdown("<br>", unsafe_allow_html=True)
-            section_header("Batch Data Table")
+            section_header("Soma Region Distribution")
+            st.caption(
+                "Distribution of cell bodies across different regions and the number of successfully projecting cells.")
+
+            soma_counts = {}
+            for _, r in results:
+                soma = r.soma_region_name
+                if soma not in soma_counts:
+                    soma_counts[soma] = {'total': 0, 'projecting': 0}
+
+                soma_counts[soma]['total'] += 1
+
+                if filter_was_active:
+                    if r.passes_filter:
+                        soma_counts[soma]['projecting'] += 1
+                else:
+                    if any(tr.projects_here for tr in r.target_results):
+                        soma_counts[soma]['projecting'] += 1
+
+            soma_df = pd.DataFrame([
+                {
+                    "Soma Region": soma,
+                    "Total Cells": data['total'],
+                    "Valid Projections": data['projecting']
+                }
+                for soma, data in soma_counts.items()
+            ]).sort_values(by="Total Cells", ascending=False)
+
+            st.dataframe(soma_df, use_container_width=True, hide_index=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            section_header("Detailed Batch Data")
 
             summary_df = results_to_dataframe(results, selected_region_ids, dictionary)
             if filter_was_active:
@@ -554,9 +656,15 @@ if 'results' in st.session_state and st.session_state['results']:
 
                 for tr in inspect_result.target_results:
                     cr = saved_criteria.get(tr.region_id, FilterCriteria())
-                    fails_this = filter_was_active and not cr.check(tr)
 
-                    if fails_this:
+                    is_active_rule = cr.is_active() and filter_was_active
+                    meets_rule = cr.meets_thresholds(tr)
+
+                    if is_active_rule and cr.operator == 'NOT' and meets_rule:
+                        st.markdown(
+                            f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Violated NOT rule</span></div>',
+                            unsafe_allow_html=True)
+                    elif is_active_rule and cr.operator == 'AND' and not meets_rule:
                         st.markdown(
                             f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Did not meet thresholds</span></div>',
                             unsafe_allow_html=True)
@@ -570,27 +678,44 @@ if 'results' in st.session_state and st.session_state['results']:
                             unsafe_allow_html=True)
 
                 st.markdown("<br>**3D Inspector**", unsafe_allow_html=True)
-                with st.spinner(f"Building 3D plot for {inspect_name}..."):
-                    fig_inspect = build_3d_plot(
-                        inspect_result, atlas_matrix, inspect_name,
-                        show_soma_region=show_soma_region,
-                        show_other_regions=show_other_regions
+                if not inspect_result.coords:
+                    st.caption(
+                        "3D data not available for this cell. Coordinate data is only kept for "
+                        "the first 60 cells to protect memory. Re-run the analysis with a smaller "
+                        "selection to view the 3D plot for this cell."
                     )
-                st.plotly_chart(fig_inspect, use_container_width=True)
+                else:
+                    with st.spinner(f"Building 3D plot for {inspect_name}..."):
+                        fig_inspect = build_3d_plot(
+                            inspect_result, atlas_matrix, inspect_name,
+                            show_soma_region=show_soma_region,
+                            show_other_regions=show_other_regions,
+                            show_only_target_regions=show_only_target_regions
+                        )
+                    st.plotly_chart(fig_inspect, use_container_width=True)
 
         with tab_3d_multi:
-            st.info(
-                "💡 **Combined View:** Joint rendering of all processed cells. Each cell gets its own color for easy distinction.")
-            max_combined = 60
-            if len(results) > max_combined:
-                st.warning(f"Only the first {max_combined} cells are rendered to protect browser memory.")
+            st.caption("Joint rendering of all processed cells. Each cell gets its own colour for easy distinction.")
 
-            combined_results = results[:max_combined]
+            # Only cells whose coordinate data was retained can be rendered.
+            # Coords are cleared for cells beyond position 60 to protect memory.
+            combined_results = [(n, r) for n, r in results if r.coords]
+            dropped = len(results) - len(combined_results)
 
-            if st.button("Generate Combined Scene", type="primary"):
+            if dropped > 0:
+                st.warning(
+                    f"{dropped} cell{'s' if dropped > 1 else ''} beyond the 60-cell 3D limit "
+                    f"cannot be rendered. Their numerical results are still available in the "
+                    f"Population Statistics tab."
+                )
+
+            if not combined_results:
+                st.caption("No cells with 3D data available.")
+            elif st.button("Generate Combined Scene", type="primary"):
                 with st.spinner(f"Rendering {len(combined_results)} cells together..."):
                     fig_multi = build_3d_plot_multi(
                         combined_results, atlas_matrix, selected_region_ids,
-                        show_target_regions=True
+                        show_target_regions=True,
+                        show_only_target_regions=show_only_target_regions
                     )
                 st.plotly_chart(fig_multi, use_container_width=True)

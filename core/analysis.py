@@ -133,7 +133,8 @@ def run_analysis(
         atlas_matrix: np.ndarray,
         dictionary: pd.DataFrame,
         target_region_ids: list[int],
-        region_descendants: dict[int, set[int]] | None = None
+        region_descendants: dict[int, set[int]] | None = None,
+        region_names: dict[int, str] | None = None
 ) -> CellAnalysisResult:
     """
     region_descendants: opcionális {régió_id -> {atlasz ID-k halmaza}} leképezés
@@ -141,6 +142,10 @@ def run_analysis(
     minden leszármazott magját is beleszámoljuk - így a SZÜLŐ régiók (Brain stem,
     Thalamus) helyesen fedik le az összes alárendelt magot. Ha None, akkor a régi,
     pontos ID-egyezéses viselkedés marad.
+
+    region_names: opcionális {régió_id -> megjelenítendő név} felülírás. A virtuális
+    régióknak (pl. a thalamus nélküli "leszálló agytörzs") nincs soruk a szótárban,
+    ezért a nevüket itt adjuk meg.
     """
     max_x, max_y, max_z = atlas_matrix.shape
 
@@ -196,6 +201,7 @@ def run_analysis(
     # A sejt ÖSSZES axon-végpontja - ez a méret-független (%-os) szűrés nevezője.
     total_endpoint_count = int(len(ep_idx))
     region_descendants = region_descendants or {}
+    region_names = region_names or {}
 
     def _match_ids(region_id: int) -> np.ndarray:
         """A régióhoz tartozó atlasz-ID-k (önmaga + leszármazottai, ha van hierarchia)."""
@@ -212,8 +218,11 @@ def run_analysis(
         a szűrő mind pontosan ugyanazt a logikát látják. A régió a szülő-régió
         esetén az összes leszármazott magot is magába foglalja (_match_ids).
         """
-        name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
-        region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
+        if region_id in region_names:
+            region_name = region_names[region_id]
+        else:
+            name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
+            region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
 
         match = _match_ids(region_id)
         ep_count = int(np.isin(ep_regions, match).sum())

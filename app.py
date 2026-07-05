@@ -8,7 +8,10 @@ import os
 import streamlit as st
 import pandas as pd
 
-from config import BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER
+from config import (
+    BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
+    BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME,
+)
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
     get_all_swc_files, build_region_search_options,
@@ -480,13 +483,16 @@ if run_button:
     # A célterületek szülő->leszármazott feloldása (pl. Brain stem, Thalamus az
     # összes alárendelt magjukra). Egyszer építjük fel, minden sejtre ezt használjuk.
     region_descendants = build_region_descendants(dictionary, selected_region_ids)
+    # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
+    region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
     progress = st.progress(0, text="Analyzing cells...")
     for i, filepath in enumerate(selected_swc_paths):
         cell_name = next((k for k, v in filtered_swc.items() if v == filepath), os.path.basename(filepath))
         try:
             swc_df = load_swc(filepath)
-            result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids, region_descendants)
+            result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
+                                  region_descendants, region_names)
             result = apply_filter(result, criteria_per_region)
             if len(st.session_state['results']) >= 60:
                 result.coords = {}

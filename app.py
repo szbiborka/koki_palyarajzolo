@@ -328,11 +328,23 @@ with st.sidebar:
                     help="Minimum total length of axon segments within the target region.",
                     key=f"filter_len_{region_id}"
                 )
+                min_ep_pct = st.number_input(
+                    "Min. endpoint share (%)", min_value=0.0, max_value=100.0,
+                    value=float(DEFAULT_FILTER['min_endpoint_fraction'] * 100), step=0.5,
+                    help=(
+                        "Size-independent threshold: the share of the cell's TOTAL axon "
+                        "endpoints that must fall inside this region. Combine with the "
+                        "'Excluded (NOT)' rule to remove Layer 6 cells — e.g. set 2.5% on the "
+                        "thalamus and mark it NOT to drop cells whose endpoints are mostly thalamic."
+                    ),
+                    key=f"filter_eppct_{region_id}"
+                )
 
                 criteria_per_region[region_id] = FilterCriteria(
                     min_endpoints=int(min_ep),
                     min_branch_points=int(min_br),
                     min_axon_length_um=float(min_len),
+                    min_endpoint_fraction=float(min_ep_pct) / 100.0,
                     operator=op  # Átadjuk az operátort a backendnek
                 )
 

@@ -168,6 +168,9 @@ The original implementation used PyVista with the stpyvista Streamlit component.
 **Projection detection logic**
 A node is an axon endpoint if it has zero children in the SWC parent-child tree. A node is a branch point if it has more than one child. A cell is considered to project to a region only if **both** an endpoint and a branch point fall within that region's voxel boundary in the Allen Atlas (see `MIN_ENDPOINTS_FOR_PROJECTION` / `MIN_BRANCH_POINTS_FOR_PROJECTION` in `core/analysis.py`). Requiring both is what excludes "passing" axons: a fiber that only branches in a region to send a collateral onward — but terminates elsewhere — has a branch point there but no endpoint, so it is correctly *not* counted as a projection. The per-region endpoint share (`endpoint_fraction`, region endpoints ÷ the cell's total endpoints) supports size-independent thresholds such as the Layer 6 thalamus filter.
 
+**Parent (umbrella) regions**
+The Allen annotation volume labels each voxel with a *leaf* structure, not with the broad parent region — so an umbrella region such as "Brain stem" (id 343) or "Thalamus" (id 549) covers **zero** voxels on its own. To make targets like "projects to Brain stem" work, `build_region_descendants` (in `core/loader.py`) expands each selected region to itself plus all of its descendants using the `structure_id_path` column of `query.csv`, and matching is done with `np.isin` against that set. This applies uniformly to projection targets and to the thalamic endpoint-share used by the Layer 6 filter. If the dictionary lacks `structure_id_path`, the code falls back to exact single-id matching.
+
 **Soma index**
 The first run builds a CSV index mapping every SWC file to the atlas region of its soma node. This is done by reading only the `type == 1` row from each file, which is much faster than loading entire SWC files. Subsequent app starts load the index from disk instantly.
 

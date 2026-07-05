@@ -47,7 +47,48 @@ def load_dictionary() -> pd.DataFrame:
             f"Dictionary file not found at: {DICTIONARY_PATH}\n"
             f"Please check the DICTIONARY_PATH in config.py"
         )
-    return pd.read_csv(DICTIONARY_PATH, usecols=['id', 'acronym', 'safe_name'])
+    # A 'structure_id_path' oszlop tartalmazza az Allen hierarchiát
+    # (pl. /997/8/343/.../), amiből a szülő-régiók (pl. Brain stem, Thalamus)
+    # feloldhatók az összes leszármazott magra. Ha egy másik szótárban nincs meg,
+    # akkor is működik minden, csak a szülő-régió kibontás marad ki.
+    full = pd.read_csv(DICTIONARY_PATH)
+    wanted = ['id', 'acronym', 'safe_name', 'structure_id_path', 'parent_structure_id']
+    keep = [c for c in wanted if c in full.columns]
+    return full[keep].copy()
+
+
+def build_region_descendants(
+    dictionary: pd.DataFrame,
+    region_ids: list[int]
+) -> dict[int, set[int]]:
+    """
+    Minden megadott régió ID-hoz visszaadja azoknak az atlasz-ID-knak a halmazát,
+    amelyek maga a régió VAGY annak leszármazottai az Allen hierarchiában.
+
+    Ez teszi lehetővé, hogy egy SZÜLŐ régió (pl. Brain stem, id=343) valóban
+    "megfogja" az összes alárendelt magot, hiszen az annotációs térfogat csak a
+    levél-régiókat címkézi - a szülő ID önmagában 0 voxelt fedne le.
+
+    Ha a szótárban nincs 'structure_id_path' oszlop, akkor mindenki csak
+    önmagára oldódik fel (a régi, pontos egyezéses viselkedés).
+    """
+    if 'structure_id_path' not in dictionary.columns:
+        return {int(rid): {int(rid)} for rid in region_ids}
+
+    paths = dictionary['structure_id_path'].fillna('')
+    ids = dictionary['id'].astype(int)
+
+    result: dict[int, set[int]] = {}
+    for rid in region_ids:
+        rid = int(rid)
+        # A '/rid/' minta a szeparátorok miatt csak a pontos ID-t fogja meg
+        # (a /343/ nem illeszkedik a /3430/-re), és megfogja az összes olyan
+        # leszármazottat, amelynek útvonalában szerepel ez az ős.
+        mask = paths.str.contains(f'/{rid}/', regex=False)
+        descendants = set(int(v) for v in ids[mask])
+        descendants.add(rid)
+        result[rid] = descendants
+    return result
 
 
 def load_swc(filepath: str) -> pd.DataFrame:

@@ -58,6 +58,7 @@ DEFAULT_FILTER = {
     'min_endpoints': 0,       # Minimum végpontok száma a célterületen
     'min_branch_points': 0,   # Minimum elágazási pontok száma a célterületen
     'min_axon_length_um': 0,  # Minimum axonhossz mikrométerben a célterületen
+    'min_endpoint_fraction': 0.0,  # Minimum végpont-arány [0..1] a célterületen (L6-szűrő)
 }
 
 # --- Vizualizációs beállítások ---

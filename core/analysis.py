@@ -132,8 +132,16 @@ def run_analysis(
         swc_df: pd.DataFrame,
         atlas_matrix: np.ndarray,
         dictionary: pd.DataFrame,
-        target_region_ids: list[int]
+        target_region_ids: list[int],
+        region_descendants: dict[int, set[int]] | None = None
 ) -> CellAnalysisResult:
+    """
+    region_descendants: opcionális {régió_id -> {atlasz ID-k halmaza}} leképezés
+    (lásd loader.build_region_descendants). Ha meg van adva, egy célterület
+    minden leszármazott magját is beleszámoljuk - így a SZÜLŐ régiók (Brain stem,
+    Thalamus) helyesen fedik le az összes alárendelt magot. Ha None, akkor a régi,
+    pontos ID-egyezéses viselkedés marad.
+    """
     max_x, max_y, max_z = atlas_matrix.shape
 
     id_arr = np.round(swc_df['id'].values).astype(int)
@@ -187,22 +195,32 @@ def run_analysis(
 
     # A sejt ÖSSZES axon-végpontja - ez a méret-független (%-os) szűrés nevezője.
     total_endpoint_count = int(len(ep_idx))
+    region_descendants = region_descendants or {}
+
+    def _match_ids(region_id: int) -> np.ndarray:
+        """A régióhoz tartozó atlasz-ID-k (önmaga + leszármazottai, ha van hierarchia)."""
+        ids = region_descendants.get(int(region_id))
+        if ids:
+            return np.fromiter((int(v) for v in ids), dtype=int)
+        return np.array([int(region_id)], dtype=int)
 
     def _build_region_result(region_id: int) -> RegionResult:
         """Egyetlen régió eredményének kiszámítása egységes definícióval.
 
         Egy helyen dől el, mi számít végpontnak, elágazásnak és VALÓDI
         vetítésnek - így a célterületek, az "egyéb" régiók, a statisztikák és
-        a szűrő mind pontosan ugyanazt a logikát látják.
+        a szűrő mind pontosan ugyanazt a logikát látják. A régió a szülő-régió
+        esetén az összes leszármazott magot is magába foglalja (_match_ids).
         """
         name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
         region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
 
-        ep_count = int(np.sum(ep_regions == region_id))
-        br_count = int(np.sum(branch_regions == region_id))
+        match = _match_ids(region_id)
+        ep_count = int(np.isin(ep_regions, match).sum())
+        br_count = int(np.isin(branch_regions, match).sum())
         proj_count = ep_count + br_count
 
-        region_axon_mask = axon_mask_curr & (point_regions[curr_idx] == region_id)
+        region_axon_mask = axon_mask_curr & np.isin(point_regions[curr_idx], match)
         axon_len = float(np.sum(distances[region_axon_mask]))
 
         fraction = (ep_count / total_endpoint_count) if total_endpoint_count > 0 else 0.0
@@ -219,12 +237,20 @@ def run_analysis(
 
     target_results = [_build_region_result(region_id) for region_id in target_region_ids]
 
+    # A célterületek által lefedett összes atlasz-ID (szülő + leszármazottak),
+    # hogy egy célrégió alrégiói ne jelenjenek meg tévesen "egyéb" vetítésként.
+    covered_ids = set(int(r) for r in target_region_ids)
+    for rid in target_region_ids:
+        covered_ids.update(int(v) for v in _match_ids(rid))
+
     # Az "egyéb" vetítéseknél is a valódi-vetítés definíciót használjuk: egy régió
     # csak akkor kerül a listára, ha van ott végpont ÉS elágazás is. Régen elég volt
     # egyetlen áthaladó elágazás, ami rengeteg hamis "egyéb célterületet" adott.
     unique_proj_regions = np.unique(proj_regions[proj_regions > 0])
-    other_region_ids = unique_proj_regions[
-        ~np.isin(unique_proj_regions, target_region_ids) & (unique_proj_regions != soma_region_id)]
+    other_region_ids = [
+        int(rid) for rid in unique_proj_regions
+        if int(rid) not in covered_ids and int(rid) != soma_region_id
+    ]
 
     other_projection_regions = [
         rr for region_id in other_region_ids

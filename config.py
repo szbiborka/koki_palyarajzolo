@@ -45,6 +45,20 @@ DEFAULT_TARGET_REGIONS = {
     'TRN - Reticular nucleus of thalamus': 262,
 }
 
+# --- Virtuális "leszálló agytörzs" célterület (pyramidal tract) ---
+# Az Allen ontológiában a "Brain stem" (343) MAGÁBA FOGLALJA a köztiagyat
+# (Interbrain), így a THALAMUST is. Ezért ha valaki a 343-as "Brain stem"-et
+# célozza, a csak thalamusba vetítő L6 sejtek is átcsúsznak a szűrőn.
+#
+# Ez a virtuális régió a VALÓDI leszálló agytörzs: Középagy (Midbrain, 313) +
+# Utóagy (Hindbrain, 1065 = híd + nyúltvelő), a thalamust KIZÁRVA. Így a
+# "vetít-e az agytörzsbe" kérdés tényleg a pyramidal tract sejteket fogja meg.
+# Negatív ID, hogy soha ne ütközzön valós Allen régió ID-val.
+BRAINSTEM_MOTOR_ID = -1001
+BRAINSTEM_MOTOR_NAME = "Brain stem descending — Midbrain+Hindbrain (excl. thalamus)"
+BRAINSTEM_MOTOR_ACRONYM = "BS-desc"
+BRAINSTEM_MOTOR_COMPONENTS = [313, 1065]  # Midbrain (MB), Hindbrain (HB)
+
 # --- Sejttípus kódok az SWC formátumban ---
 # Ez a szabványos SWC specifikáció szerint van definiálva.
 SWC_TYPE_SOMA = 1

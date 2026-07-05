@@ -10,7 +10,11 @@ import pandas as pd
 import nrrd
 import streamlit as st
 
-from config import ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE, SOMA_INDEX_PATH
+from config import (
+    ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE, SOMA_INDEX_PATH,
+    BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME, BRAINSTEM_MOTOR_ACRONYM,
+    BRAINSTEM_MOTOR_COMPONENTS,
+)
 
 
 @st.cache_resource(show_spinner="Loading atlas... (this only happens once)")
@@ -72,22 +76,35 @@ def build_region_descendants(
     Ha a szótárban nincs 'structure_id_path' oszlop, akkor mindenki csak
     önmagára oldódik fel (a régi, pontos egyezéses viselkedés).
     """
-    if 'structure_id_path' not in dictionary.columns:
-        return {int(rid): {int(rid)} for rid in region_ids}
+    has_hierarchy = 'structure_id_path' in dictionary.columns
+    if has_hierarchy:
+        paths = dictionary['structure_id_path'].fillna('')
+        ids = dictionary['id'].astype(int)
 
-    paths = dictionary['structure_id_path'].fillna('')
-    ids = dictionary['id'].astype(int)
+    def _descendants_of(parent_id: int) -> set[int]:
+        """Egy valós Allen ID + összes leszármazottja (a structure_id_path alapján)."""
+        if not has_hierarchy:
+            return {int(parent_id)}
+        # A '/parent_id/' minta a szeparátorok miatt csak a pontos ID-t fogja meg
+        # (a /343/ nem illeszkedik a /3430/-re), és megfogja az összes olyan
+        # leszármazottat, amelynek útvonalában szerepel ez az ős.
+        mask = paths.str.contains(f'/{parent_id}/', regex=False)
+        found = set(int(v) for v in ids[mask])
+        found.add(int(parent_id))
+        return found
 
     result: dict[int, set[int]] = {}
     for rid in region_ids:
         rid = int(rid)
-        # A '/rid/' minta a szeparátorok miatt csak a pontos ID-t fogja meg
-        # (a /343/ nem illeszkedik a /3430/-re), és megfogja az összes olyan
-        # leszármazottat, amelynek útvonalában szerepel ez az ős.
-        mask = paths.str.contains(f'/{rid}/', regex=False)
-        descendants = set(int(v) for v in ids[mask])
-        descendants.add(rid)
-        result[rid] = descendants
+        if rid == BRAINSTEM_MOTOR_ID:
+            # Virtuális "leszálló agytörzs": Középagy + Utóagy leszármazottai,
+            # a köztiagy/thalamus KIZÁRVA.
+            desc: set[int] = set()
+            for comp in BRAINSTEM_MOTOR_COMPONENTS:
+                desc |= _descendants_of(comp)
+            result[rid] = desc
+        else:
+            result[rid] = _descendants_of(rid)
     return result
 
 
@@ -184,6 +201,9 @@ def build_region_search_options(dictionary: pd.DataFrame) -> dict[str, int]:
         Dict ami a megjelenítési névből az ID-ra mutat
     """
     options = {}
+    # Virtuális "leszálló agytörzs" opció legelöl - ez a thalamus NÉLKÜLI agytörzs,
+    # a pyramidal tract sejtek helyes kiválasztásához.
+    options[f"{BRAINSTEM_MOTOR_NAME} ({BRAINSTEM_MOTOR_ACRONYM})"] = BRAINSTEM_MOTOR_ID
     for _, row in dictionary.iterrows():
         display_name = f"{row['safe_name']} ({row['acronym']})"
         options[display_name] = int(row['id'])

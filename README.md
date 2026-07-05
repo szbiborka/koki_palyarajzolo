@@ -8,9 +8,9 @@ A browser-based research tool for analyzing and visualizing neuron projections i
 
 Most publicly available tools — including some well-known online databases — count a neuron as projecting to a brain region simply because its axon passes *through* that region. This leads to a lot of false positives, especially for neurons with long-range axons that cross many structures on their way to their actual targets.
 
-Pályakövető takes a stricter approach: **a neuron is only considered to project to a region if it has an endpoint or branch point located within that region.** Axons that merely pass through are not counted. This is a more anatomically meaningful definition of a projection, and it is the main reason this tool exists.
+Pályakövető takes a stricter approach: **a neuron is only considered to project to a region if it forms a genuine terminal arborization there — that is, it has both an endpoint *and* a branch point within that region.** Axons that merely pass through (or that only branch there to send a collateral onward) are not counted. This is a more anatomically meaningful definition of a projection, and it is the main reason this tool exists.
 
-On top of that, you can set your own numerical thresholds — requiring a minimum number of endpoints, branch points, or a minimum axon length within a region — so you can tune the definition of "projection" to whatever your experiment calls for.
+On top of that, you can set your own numerical thresholds — requiring a minimum number of endpoints, branch points, a minimum axon length, or a minimum *share of the cell's endpoints* within a region — so you can tune the definition of "projection" to whatever your experiment calls for. The endpoint-share threshold is what lets you separate cortical layers: Layer 6 cells send the overwhelming majority of their endpoints into the thalamus, so an "Excluded (NOT) thalamus, min endpoint share 2.5%" rule removes them.
 
 ---
 
@@ -166,7 +166,7 @@ The 3D visualization now uses Plotly (WebGL, browser-native) and does not requir
 The original implementation used PyVista with the stpyvista Streamlit component. This caused two problems: (1) `plotter.show()` opens a native desktop window on whichever machine runs the server process, not on the user's browser; (2) stpyvista's VTK.js serializer fails silently on manually constructed `PolyData` objects (which is exactly how axon line geometry is built), showing a blank Kitware fallback page instead. Plotly's `go.Scatter3d` with `None`-separated segments handles the same geometry correctly and renders entirely in the browser with no server-side display requirements.
 
 **Projection detection logic**
-A node is an axon endpoint if it has zero children in the SWC parent-child tree. A node is a branch point if it has more than one child. A cell is considered to project to a region only if at least one endpoint or branch point falls within that region's voxel boundary in the Allen Atlas. Pass-through segments — where the axon enters and exits a region without terminating or branching — are not counted.
+A node is an axon endpoint if it has zero children in the SWC parent-child tree. A node is a branch point if it has more than one child. A cell is considered to project to a region only if **both** an endpoint and a branch point fall within that region's voxel boundary in the Allen Atlas (see `MIN_ENDPOINTS_FOR_PROJECTION` / `MIN_BRANCH_POINTS_FOR_PROJECTION` in `core/analysis.py`). Requiring both is what excludes "passing" axons: a fiber that only branches in a region to send a collateral onward — but terminates elsewhere — has a branch point there but no endpoint, so it is correctly *not* counted as a projection. The per-region endpoint share (`endpoint_fraction`, region endpoints ÷ the cell's total endpoints) supports size-independent thresholds such as the Layer 6 thalamus filter.
 
 **Soma index**
 The first run builds a CSV index mapping every SWC file to the atlas region of its soma node. This is done by reading only the `type == 1` row from each file, which is much faster than loading entire SWC files. Subsequent app starts load the index from disk instantly.

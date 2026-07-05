@@ -198,9 +198,72 @@ def test_parent_region_matches_descendants():
     assert bs.endpoint_count == 2 and bs.branch_point_count == 1
 
 
+# ---------------------------------------------------------------------------
+# "LESZÁLLÓ AGYTÖRZS" (Midbrain+Hindbrain) - a thalamust KIZÁRVA, mert az Allen
+# ontológiában a "Brain stem" (343) tartalmazza a köztiagyat/thalamust.
+# ---------------------------------------------------------------------------
+def _brainstem_dictionary() -> pd.DataFrame:
+    # Allen-szerű hierarchia: 343 Brain stem > 1129 Interbrain > 549 Thalamus,
+    # illetve 343 > 313 Midbrain és 343 > 1065 Hindbrain.
+    return pd.DataFrame({
+        "id":        [100,        549,   5491,  313,   3131,  1065,  10651],
+        "safe_name": ["Cortex", "Thalamus", "Thal leaf", "Midbrain",
+                      "MB leaf", "Hindbrain", "HB leaf"],
+        "structure_id_path": [
+            "/997/315/100/",
+            "/997/343/1129/549/",
+            "/997/343/1129/549/5491/",
+            "/997/343/313/",
+            "/997/343/313/3131/",
+            "/997/343/1065/",
+            "/997/343/1065/10651/",
+        ],
+    })
+
+
+def test_descending_brainstem_excludes_thalamus():
+    from core.loader import build_region_descendants
+    from config import BRAINSTEM_MOTOR_ID
+
+    dic = _brainstem_dictionary()
+
+    # A teljes Allen "Brain stem" (343) MAGÁBA foglalja a thalamust (a hiba forrása).
+    full = build_region_descendants(dic, [343])
+    assert 549 in full[343] and 5491 in full[343]
+
+    # A virtuális "leszálló agytörzs" NEM tartalmazza a thalamust, csak a
+    # közép- és utóagyat.
+    desc = build_region_descendants(dic, [BRAINSTEM_MOTOR_ID])[BRAINSTEM_MOTOR_ID]
+    assert 3131 in desc and 10651 in desc          # midbrain + hindbrain leaf bent
+    assert 549 not in desc and 5491 not in desc    # thalamus KINT
+
+    # Egy csak thalamusba arborizáló (L6-szerű) sejt: a teljes Brain stem
+    # vetítésnek látja, a leszálló agytörzs viszont NEM.
+    atlas = np.zeros((10, 4, 4), dtype=int)
+    atlas[3, :, :] = 5491   # thalamus leaf
+    atlas[4, :, :] = 5491
+    atlas[6, :, :] = 3131   # midbrain leaf (a sejt ide nem megy)
+    cell = _swc([
+        (1, 1, 0, -1),   # soma (id=0 régió, "cortex"-en kívül, mindegy)
+        (2, 2, 3, 1),    # thalamus -> elágazás
+        (3, 2, 4, 2),    # thalamus végpont
+        (4, 2, 4, 2),    # thalamus végpont
+    ])
+    names = {BRAINSTEM_MOTOR_ID: "BS-desc"}
+
+    r_full = run_analysis(cell, atlas, dic, [343], build_region_descendants(dic, [343]))
+    assert r_full.target_results[0].projects_here is True   # thalamus == "brain stem"
+
+    r_desc = run_analysis(cell, atlas, dic, [BRAINSTEM_MOTOR_ID],
+                          build_region_descendants(dic, [BRAINSTEM_MOTOR_ID]), names)
+    assert r_desc.target_results[0].projects_here is False  # thalamus kizárva
+    assert r_desc.target_results[0].region_name == "BS-desc"
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
     test_l6_filter_is_monotonic()
     test_parent_region_matches_descendants()
+    test_descending_brainstem_excludes_thalamus()
     print("All analysis regression tests passed.")

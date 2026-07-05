@@ -171,6 +171,9 @@ A node is an axon endpoint if it has zero children in the SWC parent-child tree.
 **Parent (umbrella) regions**
 The Allen annotation volume labels each voxel with a *leaf* structure, not with the broad parent region — so an umbrella region such as "Brain stem" (id 343) or "Thalamus" (id 549) covers **zero** voxels on its own. To make targets like "projects to Brain stem" work, `build_region_descendants` (in `core/loader.py`) expands each selected region to itself plus all of its descendants using the `structure_id_path` column of `query.csv`, and matching is done with `np.isin` against that set. This applies uniformly to projection targets and to the thalamic endpoint-share used by the Layer 6 filter. If the dictionary lacks `structure_id_path`, the code falls back to exact single-id matching.
 
+**Descending brain stem (excludes thalamus)**
+A quirk of the Allen ontology is that the umbrella **"Brain stem" (id 343) contains the Interbrain → Thalamus** — so "projects to Brain stem" would also count purely thalamic (Layer 6) axons as brainstem projections. For the pyramidal-tract question this is wrong. The region picker therefore offers a virtual target, **"Brain stem descending — Midbrain+Hindbrain (excl. thalamus)"** (`BRAINSTEM_MOTOR_ID` in `config.py`), which expands to the descendants of Midbrain (313) and Hindbrain (1065) only. Use this instead of the raw "Brain stem" entry when selecting pyramidal-tract cells: Layer 6 cells that project only to the thalamus then fail the brainstem criterion on their own.
+
 **Soma index**
 The first run builds a CSV index mapping every SWC file to the atlas region of its soma node. This is done by reading only the `type == 1` row from each file, which is much faster than loading entire SWC files. Subsequent app starts load the index from disk instantly.
 

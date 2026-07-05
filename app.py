@@ -643,12 +643,33 @@ if 'results' in st.session_state and st.session_state['results']:
                 {
                     "Soma Region": soma,
                     "Total Cells": data['total'],
-                    "Valid Projections": data['projecting']
+                    "Valid Projections": data['projecting'],
+                    # Százalékos arány: a vetítő sejtek hányada a régió összes sejtjéből.
+                    "Valid Projections %": round(
+                        100 * data['projecting'] / data['total'], 1
+                    ) if data['total'] > 0 else 0.0,
                 }
                 for soma, data in soma_counts.items()
             ]).sort_values(by="Total Cells", ascending=False)
 
-            st.dataframe(soma_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                soma_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Valid Projections %": st.column_config.NumberColumn(
+                        "Valid Projections %", format="%.1f%%",
+                        help="Valid Projections ÷ Total Cells, region by region."
+                    )
+                },
+            )
+
+            soma_csv = soma_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download Soma Region Summary (CSV)", data=soma_csv,
+                file_name="soma_region_summary.csv", mime="text/csv",
+                key="download_soma_summary"
+            )
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Detailed Batch Data")

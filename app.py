@@ -13,7 +13,7 @@ from core.loader import (
     load_atlas, load_dictionary, load_swc,
     get_all_swc_files, build_region_search_options,
     load_soma_index, build_soma_index, soma_index_exists,
-    filter_swc_by_soma_region
+    filter_swc_by_soma_region, build_region_descendants
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria
@@ -477,12 +477,16 @@ if run_button:
     st.session_state['errors'] = []
     st.session_state['criteria_per_region'] = criteria_per_region
 
+    # A célterületek szülő->leszármazott feloldása (pl. Brain stem, Thalamus az
+    # összes alárendelt magjukra). Egyszer építjük fel, minden sejtre ezt használjuk.
+    region_descendants = build_region_descendants(dictionary, selected_region_ids)
+
     progress = st.progress(0, text="Analyzing cells...")
     for i, filepath in enumerate(selected_swc_paths):
         cell_name = next((k for k, v in filtered_swc.items() if v == filepath), os.path.basename(filepath))
         try:
             swc_df = load_swc(filepath)
-            result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids)
+            result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids, region_descendants)
             result = apply_filter(result, criteria_per_region)
             if len(st.session_state['results']) >= 60:
                 result.coords = {}

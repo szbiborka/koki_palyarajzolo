@@ -133,8 +133,74 @@ def test_l6_filter_is_monotonic():
     assert apply_filter(run_analysis(_l6_cell(), atlas, dic, [THAL, GPE]), with_l6).passes_filter is False
 
 
+# ---------------------------------------------------------------------------
+# PARENT REGION — a szülő-régió (pl. Brain stem) az összes leszármazott magot
+# lefedi. Az annotációs térfogat csak a leveleket címkézi, a szülő ID önmagában
+# 0 voxel. A structure_id_path alapján kell feloldani.
+# ---------------------------------------------------------------------------
+BS_PARENT, BS_LEAF_A, BS_LEAF_B = 343, 7710, 7720
+
+
+def _atlas_with_bs() -> np.ndarray:
+    # x-index 8,9 kapja a brainstem LEVÉL magokat (a szülő 343 sehol nincs)
+    atlas = np.zeros((10, 4, 4), dtype=int)
+    for i in range(10):
+        atlas[i, :, :] = _region_for_x(i)
+    atlas[8, :, :] = BS_LEAF_A
+    atlas[9, :, :] = BS_LEAF_B
+    return atlas
+
+
+def _dictionary_with_hierarchy() -> pd.DataFrame:
+    return pd.DataFrame({
+        "id": [CORTEX, THAL, TRN, GPE, BS_PARENT, BS_LEAF_A, BS_LEAF_B],
+        "safe_name": ["Cortex", "Thalamus", "TRN", "GPe",
+                      "Brain stem", "BS leaf A", "BS leaf B"],
+        "structure_id_path": [
+            "/997/315/",           # cortex
+            "/997/549/",           # thalamus
+            "/997/549/262/",       # TRN
+            "/997/1022/",          # GPe
+            "/997/343/",           # Brain stem (parent)
+            "/997/343/7710/",      # leaf under brain stem
+            "/997/343/7720/",      # leaf under brain stem
+        ],
+    })
+
+
+def test_parent_region_matches_descendants():
+    from core.loader import build_region_descendants
+
+    atlas = _atlas_with_bs()
+    dic = _dictionary_with_hierarchy()
+
+    # A szülő 343 önmagában 0 voxel; a feloldásnak be kell húznia a leveleket.
+    desc = build_region_descendants(dic, [BS_PARENT])
+    assert BS_LEAF_A in desc[BS_PARENT] and BS_LEAF_B in desc[BS_PARENT]
+
+    # Egy sejt, ami a brainstem LEVÉL magban arborizál (elágazás + végpont).
+    cell = _swc([
+        (1, 1, 1, -1),   # soma cortex
+        (2, 2, 7, 1),    # axon (GPe felé haladva)
+        (3, 2, 8, 2),    # BS leaf A -> 2 gyerek => elágazás
+        (4, 2, 9, 3),    # BS leaf B -> végpont
+        (5, 2, 9, 3),    # BS leaf B -> végpont
+    ])
+
+    # Feloldás NÉLKÜL: a 343 nem fog semmit -> nincs BS vetítés (a régi hiba).
+    res_no = run_analysis(cell, atlas, dic, [BS_PARENT])
+    assert res_no.target_results[0].projects_here is False
+
+    # Feloldással: a brainstem valódi vetítésként jelenik meg.
+    res_yes = run_analysis(cell, atlas, dic, [BS_PARENT], desc)
+    bs = res_yes.target_results[0]
+    assert bs.projects_here is True
+    assert bs.endpoint_count == 2 and bs.branch_point_count == 1
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
     test_l6_filter_is_monotonic()
+    test_parent_region_matches_descendants()
     print("All analysis regression tests passed.")

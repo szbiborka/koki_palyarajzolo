@@ -625,19 +625,24 @@ if 'results' in st.session_state and st.session_state['results']:
                 "Distribution of cell bodies across different regions and the number of successfully projecting cells.")
 
             soma_counts = {}
-            for _, r in results:
+            for cell_name, r in results:
                 soma = r.soma_region_name
                 if soma not in soma_counts:
-                    soma_counts[soma] = {'total': 0, 'projecting': 0}
+                    soma_counts[soma] = {'total': 0, 'projecting': 0, 'ids': []}
 
                 soma_counts[soma]['total'] += 1
 
                 if filter_was_active:
-                    if r.passes_filter:
-                        soma_counts[soma]['projecting'] += 1
+                    is_projecting = bool(r.passes_filter)
                 else:
-                    if any(tr.projects_here for tr in r.target_results):
-                        soma_counts[soma]['projecting'] += 1
+                    is_projecting = any(tr.projects_here for tr in r.target_results)
+
+                if is_projecting:
+                    soma_counts[soma]['projecting'] += 1
+                    # A vetítő sejt sorszáma Nóra formátumában (a .swc kiterjesztés nélkül),
+                    # hogy vissza lehessen keresni az adatbázisban.
+                    cell_id = cell_name[:-4] if cell_name.lower().endswith('.swc') else cell_name
+                    soma_counts[soma]['ids'].append(cell_id)
 
             soma_df = pd.DataFrame([
                 {
@@ -648,6 +653,8 @@ if 'results' in st.session_state and st.session_state['results']:
                     "Valid Projections %": round(
                         100 * data['projecting'] / data['total'], 1
                     ) if data['total'] > 0 else 0.0,
+                    # A vetítő sejtek sorszámai (mint a korábbi CSV-kben).
+                    "Projecting Cell IDs": ", ".join(data['ids']),
                 }
                 for soma, data in soma_counts.items()
             ]).sort_values(by="Total Cells", ascending=False)
@@ -660,7 +667,11 @@ if 'results' in st.session_state and st.session_state['results']:
                     "Valid Projections %": st.column_config.NumberColumn(
                         "Valid Projections %", format="%.1f%%",
                         help="Valid Projections ÷ Total Cells, region by region."
-                    )
+                    ),
+                    "Projecting Cell IDs": st.column_config.TextColumn(
+                        "Projecting Cell IDs", width="large",
+                        help="Serial numbers of the cells that pass, for lookup in the database."
+                    ),
                 },
             )
 

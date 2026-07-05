@@ -10,6 +10,24 @@ import pandas as pd
 
 from config import VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED
 
+# =============================================================================
+# A "VALÓDI VETÍTÉS" DEFINÍCIÓJA
+# =============================================================================
+# Egy sejt akkor vetít VALÓDIAN egy régióba, ha ott terminális arborizációt ad:
+# azaz van legalább ennyi végpontja (terminális) ÉS legalább ennyi elágazása.
+# A pusztán ÁTHALADÓ axonnak (ami csak keresztezi a régiót, de máshol végződik)
+# nincs sem végpontja, sem elágazása a régióban -> így nem számít vetítésnek.
+# Régen a kód végpont VAGY elágazás alapján döntött, ezért a főaxon egyetlen
+# elágazása (kollaterális leadása) is "vetítésnek" látszott az áthaladt régióban.
+MIN_ENDPOINTS_FOR_PROJECTION = 1
+MIN_BRANCH_POINTS_FOR_PROJECTION = 1
+
+
+def _is_true_projection(endpoint_count: int, branch_point_count: int) -> bool:
+    """Valódi terminális arborizáció-e: végpont ÉS elágazás is kell hozzá."""
+    return (endpoint_count >= MIN_ENDPOINTS_FOR_PROJECTION and
+            branch_point_count >= MIN_BRANCH_POINTS_FOR_PROJECTION)
+
 
 # =============================================================================
 # ADATSTRUKTÚRÁK
@@ -20,11 +38,15 @@ class RegionResult:
     """Egyetlen célterület analízisének eredménye."""
     region_id: int
     region_name: str
-    projects_here: bool  # Vetít-e a sejtünk ide (endpoint vagy branch pont alapján)
+    projects_here: bool  # Valódi terminális arborizáció-e (végpont ÉS elágazás alapján)
     endpoint_count: int  # Csak végpontok száma (gyerek nélküli axon csomópontok)
     branch_point_count: int  # Csak elágazási pontok száma (>1 gyerek)
     projection_point_count: int  # Végpontok + elágazási pontok összesen
     axon_length_um: float  # Axonhossz mikrométerben ebben a régióban
+    # A régió végpontjainak aránya a sejt ÖSSZES axon-végpontjához képest [0..1].
+    # Ez teszi lehetővé a méret-független szűrést, pl. a L6 sejtek kiszűrését,
+    # amelyek végpontjaik túlnyomó része a thalamusba esik.
+    endpoint_fraction: float = 0.0
 
 
 @dataclass
@@ -36,23 +58,46 @@ class FilterCriteria:
     min_endpoints: int = 0
     min_branch_points: int = 0
     min_axon_length_um: float = 0
+    # Méret-független küszöb: a régió végpontjainak minimális aránya a sejt összes
+    # végpontjához képest [0..1]. NOT operátorral párosítva ez a L6-szűrő:
+    # pl. "thalamus végpont-arány >= 2.5%" => NOT => a L6 sejtek kizárása.
+    min_endpoint_fraction: float = 0.0
     operator: str = 'AND'  # 'AND', 'OR', 'NOT'
 
-    def is_active(self) -> bool:
-        """
-        A szűrő aktív, ha bármelyik küszöbérték > 0,
-        VAGY ha a felhasználó kifejezetten NOT vagy OR logikát állított be.
-        """
+    def _has_threshold(self) -> bool:
+        """Van-e legalább egy tényleges numerikus küszöb beállítva."""
         return (self.min_endpoints > 0 or
                 self.min_branch_points > 0 or
                 self.min_axon_length_um > 0 or
-                self.operator != 'AND')
+                self.min_endpoint_fraction > 0)
+
+    def is_active(self) -> bool:
+        """
+        Aktív-e a feltétel (részt vesz-e a szűrésben).
+
+        JAVÍTVA (pitfall #2): korábban a 'Required (AND)' szabály küszöb nélkül
+        INAKTÍV volt, így némán eldobtuk. Emiatt a "vetítsen a GPe-be (AND)"
+        elvárás semmit nem csinált, ha nem állítottak be hozzá számot; ráadásul
+        egy másik (pl. L6 = NOT) feltétel bekapcsolása hirtelen "aktívvá" tette az
+        egész szűrőt, megváltoztatva a számlálás alapját - így fordulhatott elő,
+        hogy egy KIZÁRÓ szűrő hatására NŐTT egy régió sejtszáma.
+
+        Most minden EXPLICIT operátor aktív: az AND azt jelenti, "ide vetítenie
+        kell" (valódi végpont+elágazás), a NOT azt, "ide nem vetíthet", az OR
+        pedig az opcionális uniót. A küszöbök ezt csak tovább szigorítják.
+        """
+        return True
 
     def meets_thresholds(self, region_result: 'RegionResult') -> bool:
-        """Kiértékeli, hogy a régió önmagában megüti-e a küszöböt."""
-        # Ha a küszöbök 0-k, de a szűrő aktív (pl. NOT vagy OR),
-        # akkor simán azt vizsgáljuk, hogy egyáltalán vetít-e ide.
-        if self.min_endpoints == 0 and self.min_branch_points == 0 and self.min_axon_length_um == 0:
+        """
+        Kiértékeli, hogy a régió önmagában megüti-e a küszöböt.
+
+        Fontos: minden megadott küszöbnek EGYSZERRE kell teljesülnie (ÉS-kapcsolat).
+        Ha egyetlen numerikus küszöb sincs megadva, akkor pusztán azt vizsgáljuk,
+        hogy a sejt valódi terminális arborizációt ad-e ide (projects_here), ami
+        önmagában is végpont ÉS elágazás meglétét jelenti.
+        """
+        if not self._has_threshold():
             return region_result.projects_here
 
         if region_result.endpoint_count < self.min_endpoints:
@@ -60,6 +105,8 @@ class FilterCriteria:
         if region_result.branch_point_count < self.min_branch_points:
             return False
         if region_result.axon_length_um < self.min_axon_length_um:
+            return False
+        if region_result.endpoint_fraction < self.min_endpoint_fraction:
             return False
         return True
 
@@ -138,8 +185,16 @@ def run_analysis(
         soma_name = "No soma found"
         soma_coords = (0.0, 0.0, 0.0)
 
-    target_results = []
-    for region_id in target_region_ids:
+    # A sejt ÖSSZES axon-végpontja - ez a méret-független (%-os) szűrés nevezője.
+    total_endpoint_count = int(len(ep_idx))
+
+    def _build_region_result(region_id: int) -> RegionResult:
+        """Egyetlen régió eredményének kiszámítása egységes definícióval.
+
+        Egy helyen dől el, mi számít végpontnak, elágazásnak és VALÓDI
+        vetítésnek - így a célterületek, az "egyéb" régiók, a statisztikák és
+        a szűrő mind pontosan ugyanazt a logikát látják.
+        """
         name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
         region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
 
@@ -150,33 +205,31 @@ def run_analysis(
         region_axon_mask = axon_mask_curr & (point_regions[curr_idx] == region_id)
         axon_len = float(np.sum(distances[region_axon_mask]))
 
-        target_results.append(RegionResult(
-            region_id=region_id, region_name=region_name,
-            projects_here=(proj_count > 0),
-            endpoint_count=ep_count, branch_point_count=br_count,
-            projection_point_count=proj_count, axon_length_um=axon_len
-        ))
+        fraction = (ep_count / total_endpoint_count) if total_endpoint_count > 0 else 0.0
 
+        return RegionResult(
+            region_id=int(region_id), region_name=region_name,
+            # JAVÍTVA: végpont ÉS elágazás is kell, nem "vagy" - így az áthaladó
+            # axonok nem számítanak hamis vetítésnek.
+            projects_here=_is_true_projection(ep_count, br_count),
+            endpoint_count=ep_count, branch_point_count=br_count,
+            projection_point_count=proj_count, axon_length_um=axon_len,
+            endpoint_fraction=fraction,
+        )
+
+    target_results = [_build_region_result(region_id) for region_id in target_region_ids]
+
+    # Az "egyéb" vetítéseknél is a valódi-vetítés definíciót használjuk: egy régió
+    # csak akkor kerül a listára, ha van ott végpont ÉS elágazás is. Régen elég volt
+    # egyetlen áthaladó elágazás, ami rengeteg hamis "egyéb célterületet" adott.
     unique_proj_regions = np.unique(proj_regions[proj_regions > 0])
     other_region_ids = unique_proj_regions[
         ~np.isin(unique_proj_regions, target_region_ids) & (unique_proj_regions != soma_region_id)]
 
-    other_projection_regions = []
-    for region_id in other_region_ids:
-        name_matches = dictionary.loc[dictionary['id'] == region_id, 'safe_name'].tolist()
-        region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
-        ep_count = int(np.sum(ep_regions == region_id))
-        br_count = int(np.sum(branch_regions == region_id))
-        proj_count = ep_count + br_count
-        region_axon_mask = axon_mask_curr & (point_regions[curr_idx] == region_id)
-        axon_len = float(np.sum(distances[region_axon_mask]))
-
-        other_projection_regions.append(RegionResult(
-            region_id=int(region_id), region_name=region_name,
-            projects_here=True, endpoint_count=ep_count,
-            branch_point_count=br_count, projection_point_count=proj_count,
-            axon_length_um=axon_len
-        ))
+    other_projection_regions = [
+        rr for region_id in other_region_ids
+        if (rr := _build_region_result(region_id)).projects_here
+    ]
 
     coords = {
         'x': x, 'y': y, 'z': z, 'type_arr': type_arr, 'is_axon': is_axon,
@@ -202,42 +255,49 @@ def apply_filter(
         criteria_per_region: dict[int, FilterCriteria]
 ) -> CellAnalysisResult:
     """
-    Ellenőrzi, hogy egy sejt analízis eredménye megfelel-e az AND / OR / NOT logikának.
+    Eldönti, hogy egy sejt átmegy-e a szűrőn, TISZTA HALMAZMŰVELETEKKEL.
+
+    A feltételeket három, egymástól független csoportba soroljuk, és a végső
+    döntés e három csoport metszete:
+
+        passes = (MINDEN 'AND' teljesül)
+                 AND (EGYETLEN 'NOT' sem teljesül)
+                 AND (ha van 'OR', akkor LEGALÁBB EGY 'OR' teljesül)
+
+    Ez a kiértékelés szándékosan SORRENDFÜGGETLEN: a régiókon való végigiterálás
+    sorrendje nem befolyásolja az eredményt, mert csak logikai ÉS/VAGY-ot
+    halmozunk. Ebből következik a legfontosabb tulajdonság is, ami a L6-szűrő
+    anomáliáját okozta: egy 'NOT' (kizáró) feltétel HOZZÁADÁSA a szűrt halmazt
+    csak SZŰKÍTHETI, sosem bővítheti - tehát a L6 sejtek eltávolítása után egyik
+    régió sejtszáma sem nőhet.
     """
-    if not any(c.is_active() for c in criteria_per_region.values()):
+    active = {rid: c for rid, c in criteria_per_region.items() if c.is_active()}
+    if not active:
         result.passes_filter = None
         return result
 
-    and_passed = True
-    or_passed = False
-    has_or = False
+    results_by_region = {tr.region_id: tr for tr in result.target_results}
 
-    for tr in result.target_results:
-        crit = criteria_per_region.get(tr.region_id)
-        if not crit or not crit.is_active():
+    required_ok = True   # minden AND teljesül
+    excluded_ok = True   # egyetlen NOT sem teljesül
+    or_exists = False
+    or_ok = False        # legalább egy OR teljesül
+
+    for region_id, crit in active.items():
+        tr = results_by_region.get(region_id)
+        if tr is None:
             continue
-
         meets = crit.meets_thresholds(tr)
 
-        if crit.operator == 'AND':
-            if not meets:
-                and_passed = False
+        if crit.operator == 'OR':
+            or_exists = True
+            or_ok = or_ok or meets
         elif crit.operator == 'NOT':
-            if meets:
-                and_passed = False  # Elbukik, mert NEM vetíthet ide
-        elif crit.operator == 'OR':
-            has_or = True
-            if meets:
-                or_passed = True
+            excluded_ok = excluded_ok and not meets
+        else:  # 'AND'
+            required_ok = required_ok and meets
 
-    # Végső kiértékelés
-    if has_or and not or_passed:
-        result.passes_filter = False
-    elif not and_passed:
-        result.passes_filter = False
-    else:
-        result.passes_filter = True
-
+    result.passes_filter = required_ok and excluded_ok and (or_ok or not or_exists)
     return result
 
 
@@ -264,5 +324,8 @@ def results_to_dataframe(
             row[f'{safe_col}_endpoints'] = tr.endpoint_count
             row[f'{safe_col}_branches'] = tr.branch_point_count
             row[f'{safe_col}_axon_um'] = round(tr.axon_length_um, 1)
+            # Végpont-arány %-ban - ez alapján azonosíthatók a L6 sejtek
+            # (pl. thalamus-arány > 2.5%).
+            row[f'{safe_col}_endpoint_pct'] = round(tr.endpoint_fraction * 100, 2)
         rows.append(row)
     return pd.DataFrame(rows)

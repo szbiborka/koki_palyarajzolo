@@ -260,10 +260,64 @@ def test_descending_brainstem_excludes_thalamus():
     assert r_desc.target_results[0].region_name == "BS-desc"
 
 
+# ---------------------------------------------------------------------------
+# CORTICAL SUMMARY — a végleges bs_benne / bs_nelkul táblák helyes nevezővel.
+# ---------------------------------------------------------------------------
+def _region_result(rid, name, projects, axon=100.0):
+    from core.analysis import RegionResult
+    return RegionResult(
+        region_id=rid, region_name=name, projects_here=projects,
+        endpoint_count=1 if projects else 0, branch_point_count=1 if projects else 0,
+        projection_point_count=2 if projects else 0,
+        axon_length_um=axon if projects else 0.0, endpoint_fraction=0.0)
+
+
+def _cell(soma, bs, gpe, trn):
+    from core.analysis import CellAnalysisResult
+    return CellAnalysisResult(
+        soma_region_id=1, soma_region_name=soma, soma_coords=(0, 0, 0),
+        target_results=[_region_result(343, 'BS', bs),
+                        _region_result(GPE, 'GPe', gpe),
+                        _region_result(TRN, 'TRN', trn)],
+        other_projection_regions=[], total_axon_length_um=1000.0)
+
+
+def test_cortical_summary_denominator():
+    from core.analysis import build_cortical_summary
+    # M régió: A=BS+GPe+TRN, B=BS+GPe, C=BS, D=GPe(nem PT), E=semmi
+    results = [
+        ("A.swc", _cell("M", True,  True,  True)),
+        ("B.swc", _cell("M", True,  True,  False)),
+        ("C.swc", _cell("M", True,  False, False)),
+        ("D.swc", _cell("M", False, True,  False)),
+        ("E.swc", _cell("M", False, False, False)),
+    ]
+    label = {343: 'BS', GPE: 'GPe', TRN: 'TRN'}.get
+    s = build_cortical_summary(results, base_region_id=343,
+                               numerator_region_ids=[GPE, TRN], region_label_fn=label)
+
+    be = s['benne'].iloc[0]
+    assert be['PT Cells (BS=100%)'] == 3          # A,B,C project to brain stem
+    assert be['GPe n'] == 2 and be['GPe %'] == 66.7   # A,B  -> 2/3
+    assert be['TRN n'] == 1 and be['TRN %'] == 33.3   # A    -> 1/3
+    assert be['All targets n'] == 1                    # A
+
+    ne = s['nelkul'].iloc[0]
+    assert ne['Total L5 Cells'] == 5
+    assert ne['GPe n'] == 3 and ne['GPe %'] == 60.0    # A,B,D over all 5
+    assert ne['TRN n'] == 1 and ne['TRN %'] == 20.0
+
+    # kategória-tábla a sorszámokkal
+    gpe_cat = s['categories']['GPe'].iloc[0]
+    assert gpe_cat['GPe Projects'] == 2
+    assert gpe_cat['Projecting Cell IDs'] == "A, B"
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
     test_l6_filter_is_monotonic()
     test_parent_region_matches_descendants()
     test_descending_brainstem_excludes_thalamus()
+    test_cortical_summary_denominator()
     print("All analysis regression tests passed.")

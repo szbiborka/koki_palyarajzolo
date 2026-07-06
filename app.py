@@ -19,7 +19,8 @@ from core.loader import (
     filter_swc_by_soma_region, build_region_descendants
 )
 from core.analysis import (
-    run_analysis, apply_filter, results_to_dataframe, FilterCriteria
+    run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
+    build_cortical_summary
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
@@ -608,8 +609,8 @@ if 'results' in st.session_state and st.session_state['results']:
     # BATCH VIEW
     # =========================================================================
     else:
-        tab_stats, tab_inspector, tab_3d_multi = st.tabs(
-            ["Population Statistics", "Single Cell Inspector", "Combined 3D View"])
+        tab_stats, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
+            ["Population Statistics", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"])
 
         with tab_stats:
             passed = sum(1 for _, r in results if r.passes_filter is True)
@@ -699,6 +700,73 @@ if 'results' in st.session_state and st.session_state['results']:
 
             csv_data = summary_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Dataset (CSV)", data=csv_data, file_name="batch_results.csv", mime="text/csv")
+
+        # =====================================================================
+        # CORTICAL SUMMARY TAB — a Nóra-féle végleges táblázatok, automatikusan
+        # =====================================================================
+        with tab_summary:
+            section_header("Cortical Projection Summary")
+            st.caption(
+                "Ready-to-send tables, per cortical region. Percentages use the strict "
+                "projection definition (endpoint **and** branch) directly — independent of "
+                "the sidebar filter — so there is no L6 over-removal and no wrong denominator."
+            )
+
+            def _region_label(rid: int) -> str:
+                if rid == BRAINSTEM_MOTOR_ID:
+                    return "Brain stem (descending)"
+                names = dictionary.loc[dictionary['id'] == rid, 'safe_name'].tolist()
+                return names[0] if names else f"ID {rid}"
+
+            label_to_id = {_region_label(rid): rid for rid in selected_region_ids}
+            base_options = ["(All L5 cells — no PT base)"] + list(label_to_id.keys())
+            # Alapértelmezés: a leszálló agytörzs, ha ki van választva.
+            default_idx = 0
+            for i, lab in enumerate(label_to_id.keys()):
+                if "brain stem" in lab.lower():
+                    default_idx = i + 1
+                    break
+
+            base_choice = st.selectbox(
+                "Population base = 100%",
+                options=base_options, index=default_idx,
+                help="The region that defines the pyramidal-tract (PT) population — usually "
+                     "'Brain stem (descending)'. Every percentage is taken relative to this."
+            )
+            base_id = None if base_choice.startswith("(All L5") else label_to_id[base_choice]
+            numerator_ids = [rid for rid in selected_region_ids if rid != base_id]
+
+            if not numerator_ids:
+                st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
+            else:
+                summary = build_cortical_summary(results, base_id, numerator_ids, _region_label)
+
+                st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
+                st.dataframe(summary['benne'], use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇ Download bs_benne.csv", summary['benne'].to_csv(index=False).encode('utf-8'),
+                    file_name="bs_benne.csv", mime="text/csv", key="dl_benne")
+
+                st.markdown("**2. All L5 = 100% (no brain-stem requirement)** — *bs_nelkul*")
+                st.dataframe(summary['nelkul'], use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇ Download bs_nelkul.csv", summary['nelkul'].to_csv(index=False).encode('utf-8'),
+                    file_name="bs_nelkul.csv", mime="text/csv", key="dl_nelkul")
+
+                st.markdown("**3. Average axon length in each target (µm), among PT cells**")
+                st.dataframe(summary['axon'], use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇ Download axon_length_summary.csv", summary['axon'].to_csv(index=False).encode('utf-8'),
+                    file_name="axon_length_summary.csv", mime="text/csv", key="dl_axon")
+
+                st.markdown("**4. Category tables with projecting cell IDs**")
+                for lab, df in summary['categories'].items():
+                    safe = ''.join(ch if ch.isalnum() else '_' for ch in lab.lower())[:24]
+                    with st.expander(f"{lab}  ({int(df.iloc[:, 2].sum())} cells)"):
+                        st.dataframe(df, use_container_width=True, hide_index=True)
+                        st.download_button(
+                            f"⬇ Download {safe}.csv", df.to_csv(index=False).encode('utf-8'),
+                            file_name=f"bs_{safe}.csv", mime="text/csv", key=f"dl_cat_{safe}")
 
         with tab_inspector:
             st.markdown("Select a single cell from the processed population to view detailed metrics and its 3D scene.")

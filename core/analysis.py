@@ -364,3 +364,132 @@ def results_to_dataframe(
             row[f'{safe_col}_endpoint_pct'] = round(tr.endpoint_fraction * 100, 2)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+# =============================================================================
+# KÉRGI VETÍTÉSI ÖSSZESÍTŐ (a Nóra által kért végleges táblázatok)
+# =============================================================================
+# Ez a modul EGYBŐL a helyes összesítőket állítja elő, kézi táblázat-építés nélkül:
+#   - "agytörzs = 100%" (PT sejtek a nevezőben)  -> bs_benne
+#   - "összes L5 = 100%" (agytörzs-feltétel nélkül) -> bs_nelkul
+#   - régiónkénti átlag axonhossz a célterületeken
+#   - kategória-táblák a vetítő sejtek sorszámaival
+#
+# FONTOS: mindenhol a projects_here (végpont ÉS elágazás) definíciót használjuk,
+# közvetlenül - NEM a sidebar szűrőt. Így elkerüljük a két korábbi buktatót:
+#   (1) a 2.5%-os L6-szűrő, ami a motoros PT sejteket is kidobta, és
+#   (2) a rossz nevező (összes L5 helyett PT sejtek).
+
+
+def _cell_serial(cell_name: str) -> str:
+    """A .swc kiterjesztés nélküli sorszám (adatbázis-kereséshez)."""
+    return cell_name[:-4] if cell_name.lower().endswith('.swc') else cell_name
+
+
+def _region_of(result: CellAnalysisResult, region_id: int) -> RegionResult | None:
+    for tr in result.target_results:
+        if tr.region_id == region_id:
+            return tr
+    return None
+
+
+def _projects_to(result: CellAnalysisResult, region_id: int) -> bool:
+    tr = _region_of(result, region_id)
+    return bool(tr and tr.projects_here)
+
+
+def build_cortical_summary(
+        results: list[tuple[str, CellAnalysisResult]],
+        base_region_id: int | None,
+        numerator_region_ids: list[int],
+        region_label_fn,
+) -> dict:
+    """
+    Kérgi régiónkénti összesítők a Nóra-féle definíciók szerint.
+
+    base_region_id: a "100%" populációt definiáló régió (pl. leszálló agytörzs =
+        PT sejtek). Ha None, akkor a nevező az ÖSSZES L5 sejt.
+    numerator_region_ids: a célterületek (pl. GPe, TRN), amelyekre a %-ot adjuk.
+    region_label_fn: régió_id -> megjelenítendő név.
+
+    Visszatér: {'benne', 'nelkul', 'axon', 'categories'} DataFrame-ekkel.
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list] = defaultdict(list)
+    for name, r in results:
+        groups[r.soma_region_name].append((name, r))
+
+    num_labels = [region_label_fn(rid) for rid in numerator_region_ids]
+    base_label = region_label_fn(base_region_id) if base_region_id is not None else "All L5"
+    base_col = f"PT Cells ({base_label}=100%)"
+
+    def is_base(r: CellAnalysisResult) -> bool:
+        return True if base_region_id is None else _projects_to(r, base_region_id)
+
+    def meets_all(r: CellAnalysisResult) -> bool:
+        return bool(numerator_region_ids) and all(_projects_to(r, rid) for rid in numerator_region_ids)
+
+    benne_rows, nelkul_rows, axon_rows = [], [], []
+    cat_rows: dict[str, list] = {lab: [] for lab in num_labels}
+    cat_all_rows: list = []
+
+    for soma, cells in sorted(groups.items()):
+        total = len(cells)
+        base_cells = [(n, r) for (n, r) in cells if is_base(r)]
+        nbase = len(base_cells)
+
+        row_b = {"Soma Region": soma, base_col: nbase}
+        row_n = {"Soma Region": soma, "Total L5 Cells": total}
+        row_a = {"Soma Region": soma, "PT Cells": nbase}
+
+        for rid, lab in zip(numerator_region_ids, num_labels):
+            cb = sum(1 for (_, r) in base_cells if _projects_to(r, rid))
+            row_b[f"{lab} n"] = cb
+            row_b[f"{lab} %"] = round(100 * cb / nbase, 1) if nbase else 0.0
+
+            cn = sum(1 for (_, r) in cells if _projects_to(r, rid))
+            row_n[f"{lab} n"] = cn
+            row_n[f"{lab} %"] = round(100 * cn / total, 1) if total else 0.0
+
+            lens = [_region_of(r, rid).axon_length_um for (_, r) in base_cells if _projects_to(r, rid)]
+            row_a[f"{lab} mean axon µm"] = round(sum(lens) / len(lens), 1) if lens else 0.0
+
+            ids = sorted(_cell_serial(n) for (n, r) in base_cells if _projects_to(r, rid))
+            cat_rows[lab].append({
+                "Soma Region": soma, base_col: nbase,
+                f"{lab} Projects": len(ids),
+                f"{lab} % of PT": round(100 * len(ids) / nbase, 1) if nbase else 0.0,
+                "Projecting Cell IDs": ", ".join(ids),
+            })
+
+        cb_all = sum(1 for (_, r) in base_cells if meets_all(r))
+        row_b["All targets n"] = cb_all
+        row_b["All targets %"] = round(100 * cb_all / nbase, 1) if nbase else 0.0
+        cn_all = sum(1 for (_, r) in cells if meets_all(r))
+        row_n["All targets n"] = cn_all
+        row_n["All targets %"] = round(100 * cn_all / total, 1) if total else 0.0
+
+        ids_all = sorted(_cell_serial(n) for (n, r) in base_cells if meets_all(r))
+        cat_all_rows.append({
+            "Soma Region": soma, base_col: nbase,
+            "All targets Projects": len(ids_all),
+            "All targets % of PT": round(100 * len(ids_all) / nbase, 1) if nbase else 0.0,
+            "Projecting Cell IDs": ", ".join(ids_all),
+        })
+
+        benne_rows.append(row_b)
+        nelkul_rows.append(row_n)
+        axon_rows.append(row_a)
+
+    benne = pd.DataFrame(benne_rows).sort_values(base_col, ascending=False)
+    nelkul = pd.DataFrame(nelkul_rows).sort_values("Total L5 Cells", ascending=False)
+    axon = pd.DataFrame(axon_rows).sort_values("PT Cells", ascending=False)
+
+    categories = {}
+    for lab in num_labels:
+        categories[lab] = pd.DataFrame(cat_rows[lab]).sort_values(f"{lab} Projects", ascending=False)
+    if len(numerator_region_ids) > 1:
+        categories["All targets"] = pd.DataFrame(cat_all_rows).sort_values("All targets Projects", ascending=False)
+
+    return {"benne": benne, "nelkul": nelkul, "axon": axon, "categories": categories}

@@ -30,6 +30,15 @@ For each target region independently, you can set:
 
 All conditions must be met simultaneously. In batch mode, cells that do not meet the criteria are clearly flagged in the results table with a separate color.
 
+### Cortical projection summary (batch mode)
+The **Cortical Summary** tab turns a batch run into the finished, ready-to-send tables — no spreadsheet assembly. You pick a **population base region** (typically "Brain stem (descending)", which defines the pyramidal-tract cells), and every remaining target region (GPe, TRN, …) becomes a numerator. It then produces, per cortical soma region:
+- **Brain stem = 100%** — the share of PT cells projecting to each target and to all of them together;
+- **All L5 = 100%** — the same, without the brain-stem requirement;
+- **average axon length** in each target among PT cells;
+- **category tables** listing the projecting cells' serial numbers.
+
+These use the strict projection definition (endpoint **and** branch) directly and always divide by the chosen base, so the "which denominator" and Layer-6-over-removal mistakes cannot occur. Every table is downloadable as CSV. Implemented in `build_cortical_summary` (`core/analysis.py`).
+
 ### Soma region filtering
 With thousands of SWC files, scrolling through a list is not practical. Type part of a region name — "motor", "thalamus", "striatum" — and the file list instantly narrows to only cells whose soma is located in a matching region. This is powered by a one-time index that scans all SWC files on first use and saves the result; subsequent loads are instant.
 

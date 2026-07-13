@@ -1,6 +1,4 @@
-# =============================================================================
 # VIZUALIZÁCIÓ MODUL - 3D ábra generálása Plotly-val.
-# =============================================================================
 
 import numpy as np
 import plotly.graph_objects as go

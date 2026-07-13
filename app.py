@@ -1,8 +1,6 @@
-# =============================================================================
 # APP.PY - Streamlit Application Entry Point
 # Contains ONLY UI elements. No scientific logic is executed here.
 # Run with: streamlit run app.py
-# =============================================================================
 
 import os
 import streamlit as st
@@ -26,9 +24,7 @@ from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
 )
 
-# =============================================================================
 # PAGE CONFIGURATION & CSS
-# =============================================================================
 st.set_page_config(
     page_title="Palyakoveto — Neuron Projection Analyzer",
     page_icon="🧠",
@@ -39,169 +35,251 @@ st.set_page_config(
 st.markdown("""
 <style>
     :root {
-        --cream: #F9FAED;
-        --sage-tint: #E9ECDD;
-        --border-sage: #CFD6BC;
-        --sage-light: #9DAE89;
-        --sage: #5F7350;
-        --sage-deep: #33401F;
-        --rosewood-tint: #F3E2E0;
-        --rosewood-light: #C98F8B;
-        --rosewood: #7A3B3B;
-        --rosewood-deep: #4A2020;
-        --taupe: #8C8775;
-        --taupe-tint: #EFEDE6;
-        --taupe-deep: #56523F;
+        /* Alapszínek (Organikus zsálya és rózsafa vonal megtartva) */
+        --cream: #FAF9F6;           /* Lágyabb, melegebb háttér */
+        --sage-tint: #EBEFDF;       
+        --border-sage: #C7D1B5;     
+        --sage-light: #A4B595;
+        --sage: #6B8059;
+        --sage-deep: #3A4A28;
+
+        /* Új kiegészítő színek: Fáradt mályva és púder */
+        --rosewood-tint: #F7EAE8;
+        --rosewood-light: #D4A39F;
+        --rosewood: #8A4F4F;
+        --rosewood-deep: #542D2D;
+
+        /* Klaszikus elegancia (szépia/taupe) */
+        --taupe: #948F7F;
+        --taupe-tint: #F2F0EB;
+        --taupe-deep: #5E5A4A;
+
+        /* High-tech neurális hálózat akcentus */
+        --neural-highlight: #D96C75; /* Élénkebb, "szinapszis-tüzelés" szín */
+
+        /* UI Formák */
+        --border-radius-soft: 16px;  /* Lágy, sejtszerű kerekítések */
+        --border-radius-pill: 24px;
     }
 
     html, body, [class*="css"] {
         font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
     }
 
-    /* Background and sidebar */
-    .stApp { background-color: var(--cream); }
-    [data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child {
-        background-color: var(--sage-tint);
-        border-right: 1px solid var(--border-sage);
+    /* --- Háttér és Oldalsáv (Sidebar) --- */
+    .stApp { 
+        background-color: var(--cream); 
+        /* Diszkrét, klasszikus Cajal-jellegű háttérminta (opcionális, nagyon halvány) */
+        background-image: radial-gradient(var(--taupe-tint) 1px, transparent 1px);
+        background-size: 20px 20px;
     }
 
-    /* Headers */
+    [data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child {
+        background-color: var(--sage-tint);
+        border-right: 1px dashed var(--border-sage);
+        box-shadow: 2px 0 10px rgba(0,0,0,0.02);
+    }
+
+    /* --- Tipográfia és Címsorok --- */
     .sidebar-title {
-        font-size: 1.25rem;
+        font-size: 1.35rem;
         font-weight: 800;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
         color: var(--sage-deep);
         margin-bottom: 0.2rem;
         display: flex;
         align-items: center;
+        /* Klasszikus serif érintés a címeknél */
+        font-family: 'Georgia', serif; 
     }
     .sidebar-subtitle {
         font-size: 0.75rem;
         color: var(--rosewood);
-        letter-spacing: 0.08em;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         margin-bottom: 1.5rem;
         font-weight: 600;
     }
 
-    /* Floating professional cards */
+    /* --- Organikus Lebegő Kártyák (Result Cards) --- */
     .result-card {
         background: #FFFFFF;
-        border: none;
-        border-left: 4px solid var(--sage);
-        border-radius: 8px;
-        padding: 1.2rem 1.5rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02), 0 1px 3px rgba(0, 0, 0, 0.03);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        border: 1px solid rgba(199, 209, 181, 0.4); /* Nagyon finom keret */
+        border-left: 5px solid var(--sage);
+        border-radius: var(--border-radius-soft); /* Buborékosabb, lágy formák */
+        padding: 1.4rem 1.8rem;
+        margin-bottom: 1.2rem;
+        box-shadow: 0 4px 12px rgba(95, 115, 80, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02);
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        position: relative;
+        overflow: hidden;
     }
+
+    /* Visszafogott neurális hálózat minta a kártyák jobb felső sarkában */
+    .result-card::before {
+        content: "";
+        position: absolute;
+        top: -15px;
+        right: -15px;
+        width: 60px;
+        height: 60px;
+        background: radial-gradient(circle, var(--sage-tint) 10%, transparent 10%),
+                    radial-gradient(circle, var(--sage-tint) 10%, transparent 10%);
+        background-size: 10px 10px;
+        opacity: 0.5;
+        border-radius: 50%;
+    }
+
     .result-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.05);
+        transform: translateY(-3px);
+        box-shadow: 0 10px 20px rgba(95, 115, 80, 0.08);
+        border-color: var(--sage-light);
     }
+
     .result-card.positive { border-left-color: var(--sage); }
-    .result-card.negative { border-left-color: var(--taupe); opacity: 0.85; }
+    .result-card.negative { border-left-color: var(--taupe); opacity: 0.9; }
     .result-card.filtered-out {
         border-left-color: var(--rosewood-light);
-        background: var(--rosewood-tint);
+        background: linear-gradient(to right, var(--rosewood-tint), #FFFFFF);
     }
 
     .result-card h4 {
-        margin: 0 0 0.5rem 0;
-        font-size: 1.05rem;
+        margin: 0 0 0.6rem 0;
+        font-size: 1.1rem;
         font-weight: 700;
         color: var(--sage-deep);
+        font-family: 'Georgia', serif;
     }
-    .result-card .meta { font-size: 0.85rem; color: var(--taupe-deep); }
+    .result-card .meta { 
+        font-size: 0.85rem; 
+        color: var(--taupe-deep); 
+        font-weight: 500;
+    }
 
-    /* Tags */
+    /* --- Címkék (Tags) - Szinaptikus hólyag forma --- */
     .tag-yes, .tag-no, .tag-filtered {
         display: inline-block;
-        font-size: 0.7rem;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        padding: 0.2rem 0.7rem;
-        border-radius: 12px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        padding: 0.3rem 0.8rem;
+        border-radius: var(--border-radius-pill); /* Teljesen lekerekített */
         text-transform: uppercase;
         margin-right: 0.6rem;
-        margin-bottom: 0.4rem;
+        margin-bottom: 0.5rem;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05); /* Finom belső kontúr */
     }
     .tag-yes { background: var(--sage-tint); color: var(--sage-deep); }
     .tag-no { background: var(--taupe-tint); color: var(--taupe-deep); }
-    .tag-filtered { background: rgba(201, 143, 139, 0.2); color: var(--rosewood-deep); }
+    .tag-filtered { background: rgba(212, 163, 159, 0.25); color: var(--rosewood-deep); }
 
-    /* Main page header */
+    /* --- Főoldali Fejléc --- */
     .page-header {
-        margin-bottom: 2rem;
+        margin-bottom: 2.5rem;
     }
     .page-header h1 {
-        font-size: 2rem;
+        font-size: 2.2rem;
         font-weight: 800;
-        letter-spacing: 0.01em;
+        letter-spacing: 0.02em;
         color: var(--sage-deep);
         margin: 0;
+        font-family: 'Georgia', serif;
     }
     .page-header p {
-        font-size: 0.9rem;
+        font-size: 0.95rem;
         color: var(--rosewood);
         font-weight: 600;
-        margin: 0.3rem 0 0 0;
+        margin: 0.4rem 0 0 0;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
     }
 
-    /* Custom divider (Myelin/Synapse style) */
+    /* --- Elválasztó vonalak (Axonális design) --- */
     hr {
         border: none;
-        height: 1px;
+        height: 2px;
         background: linear-gradient(to right, transparent, var(--border-sage), transparent);
         position: relative;
-        margin: 2.5rem 0;
+        margin: 3rem 0;
+        overflow: visible;
     }
     hr::after {
-        content: "◆";
-        color: var(--rosewood-light);
-        font-size: 14px;
+        /* Szinaptikus gomb szimbólum */
+        content: "●";
+        color: var(--neural-highlight);
+        font-size: 18px;
         position: absolute;
         left: 50%;
-        top: -10px;
+        top: -12px;
         transform: translateX(-50%);
+        text-shadow: 0 0 8px rgba(217, 108, 117, 0.4); /* Enyhe fluoreszcens hatás */
     }
 
-    /* Button refinements */
+    /* --- Gombok (Sima, modern) --- */
     .stButton > button { 
-        border-radius: 6px; 
-        font-weight: 600; 
-        letter-spacing: 0.03em; 
-        transition: all 0.2s;
+        border-radius: var(--border-radius-pill) !important; 
+        font-weight: 700 !important; 
+        letter-spacing: 0.05em !important; 
+        text-transform: uppercase;
+        font-size: 0.85rem !important;
+        transition: all 0.25s ease !important;
+        padding: 0.5rem 1.5rem !important;
     }
     [data-testid="baseButton-primary"] {
-        background-color: var(--rosewood) !important;
-        border-color: var(--rosewood) !important;
-        color: var(--cream) !important;
-        box-shadow: 0 4px 6px rgba(122, 59, 59, 0.2);
+        background: linear-gradient(135deg, var(--rosewood), var(--rosewood-light)) !important;
+        border: none !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 4px 10px rgba(138, 79, 79, 0.3) !important;
     }
     [data-testid="baseButton-primary"]:hover {
-        background-color: var(--rosewood-deep) !important;
-        box-shadow: 0 6px 12px rgba(122, 59, 59, 0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(138, 79, 79, 0.4) !important;
+        background: linear-gradient(135deg, var(--rosewood-deep), var(--rosewood)) !important;
     }
 
-    /* Smaller, refined tabs */
+    /* Másodlagos gombok (Soma index stb.) */
+    [data-testid="baseButton-secondary"] {
+        border: 1px solid var(--border-sage) !important;
+        color: var(--sage-deep) !important;
+        background-color: transparent !important;
+    }
+    [data-testid="baseButton-secondary"]:hover {
+        border-color: var(--sage) !important;
+        background-color: var(--sage-tint) !important;
+    }
+
+    /* --- Tabok --- */
     [data-testid="stTabs"] button {
-        font-weight: 600;
-        color: var(--taupe-deep);
+        font-weight: 700;
+        color: var(--taupe);
+        letter-spacing: 0.02em;
+        padding-bottom: 0.8rem;
     }
     [data-testid="stTabs"] button[aria-selected="true"] {
         color: var(--sage-deep);
-        border-bottom-color: var(--sage);
+        border-bottom-color: var(--neural-highlight); /* Aktív tab jelzése élénk színnel */
+        border-bottom-width: 3px;
+    }
+
+    /* --- Metrikák (Nagy számok) --- */
+    [data-testid="stMetricValue"] {
+        color: var(--sage-deep);
+        font-weight: 800;
+        font-family: 'Georgia', serif;
+    }
+    [data-testid="stMetricLabel"] {
+        color: var(--rosewood);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
 
     footer, #MainMenu { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# =============================================================================
 # CUSTOM ICONS (SVG)
-# =============================================================================
 NEURON_MARK = """
 <svg width="24" height="24" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg"
      style="vertical-align:-6px;margin-right:8px;">
@@ -242,9 +320,7 @@ def section_header(title: str):
     st.markdown(f"<h4>{SYNAPSE_MARK}{title}</h4>", unsafe_allow_html=True)
 
 
-# =============================================================================
 # GLOBAL DATA LOADING
-# =============================================================================
 try:
     atlas_matrix, atlas_header = load_atlas()
     dictionary = load_dictionary()
@@ -255,9 +331,7 @@ except FileNotFoundError as e:
 
 all_swc = get_all_swc_files(BASE_DATA_DIR)
 
-# =============================================================================
 # SIDEBAR
-# =============================================================================
 with st.sidebar:
     st.markdown(f'<div class="sidebar-title">{NEURON_MARK} Palyakoveto</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Neuron Projection Analyzer</div>', unsafe_allow_html=True)
@@ -449,9 +523,7 @@ with st.sidebar:
         key="toggle_exclusive"
     )
 
-# =============================================================================
 # MAIN CONTENT (TABS LAYOUT)
-# =============================================================================
 
 if not selected_swc_paths or not selected_region_ids:
     st.markdown(f"""
@@ -516,9 +588,7 @@ if 'results' in st.session_state and st.session_state['results']:
 
     st.divider()
 
-    # =========================================================================
     # SINGLE CELL VIEW
-    # =========================================================================
     if len(results) == 1:
         cell_name, result = results[0]
 
@@ -595,7 +665,8 @@ if 'results' in st.session_state and st.session_state['results']:
                 st.dataframe(other_df, use_container_width=True, hide_index=True)
 
         with tab_3d:
-            st.info("**Tip:** Use the left mouse button to rotate, the right button to pan, and the scroll wheel to zoom.")
+            st.info(
+                "**Tip:** Use the left mouse button to rotate, the right button to pan, and the scroll wheel to zoom.")
             with st.spinner("Building interactive 3D plot..."):
                 fig = build_3d_plot(
                     result, atlas_matrix, cell_name,
@@ -605,9 +676,7 @@ if 'results' in st.session_state and st.session_state['results']:
                 )
             st.plotly_chart(fig, use_container_width=True)
 
-    # =========================================================================
     # BATCH VIEW
-    # =========================================================================
     else:
         tab_stats, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
             ["Population Statistics", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"])
@@ -701,9 +770,7 @@ if 'results' in st.session_state and st.session_state['results']:
             csv_data = summary_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Dataset (CSV)", data=csv_data, file_name="batch_results.csv", mime="text/csv")
 
-        # =====================================================================
         # CORTICAL SUMMARY TAB — a Nóra-féle végleges táblázatok, automatikusan
-        # =====================================================================
         with tab_summary:
             section_header("Cortical Projection Summary")
             st.caption(
@@ -712,11 +779,13 @@ if 'results' in st.session_state and st.session_state['results']:
                 "the sidebar filter — so there is no L6 over-removal and no wrong denominator."
             )
 
+
             def _region_label(rid: int) -> str:
                 if rid == BRAINSTEM_MOTOR_ID:
                     return "Brain stem (descending)"
                 names = dictionary.loc[dictionary['id'] == rid, 'safe_name'].tolist()
                 return names[0] if names else f"ID {rid}"
+
 
             label_to_id = {_region_label(rid): rid for rid in selected_region_ids}
             base_options = ["(All L5 cells — no PT base)"] + list(label_to_id.keys())

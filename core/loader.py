@@ -1,8 +1,6 @@
-# =============================================================================
 # BETÖLTŐ MODUL - Atlas, szótár, SWC fájlok és soma index kezelése.
 # A Streamlit @st.cache_data dekorátorral az atlas csak egyszer töltődik be,
 # még akkor is, ha a felhasználó újra kattint valamire.
-# =============================================================================
 
 import os
 import numpy as np
@@ -210,9 +208,7 @@ def build_region_search_options(dictionary: pd.DataFrame) -> dict[str, int]:
     return options
 
 
-# =============================================================================
 # SOMA INDEX - Gyors soma-régió megfeleltetés 12000+ fájlhoz
-# =============================================================================
 
 def soma_index_exists() -> bool:
     """Visszaadja, hogy létezik-e már a soma index fájl."""

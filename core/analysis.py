@@ -1,8 +1,6 @@
-# =============================================================================
 # ANALÍZIS MODUL - A tudományos számítási logika.
 # Ez a modul semmilyen UI elemet nem tartalmaz - csak tiszta Python/NumPy.
 # Ez a szándékos: bármikor tesztelhető és bővíthető a Streamlit-től függetlenül.
-# =============================================================================
 
 from dataclasses import dataclass, field
 import numpy as np
@@ -10,9 +8,7 @@ import pandas as pd
 
 from config import VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED
 
-# =============================================================================
 # A "VALÓDI VETÍTÉS" DEFINÍCIÓJA
-# =============================================================================
 # Egy sejt akkor vetít VALÓDIAN egy régióba, ha ott terminális arborizációt ad:
 # azaz van legalább ennyi végpontja (terminális) ÉS legalább ennyi elágazása.
 # A pusztán ÁTHALADÓ axonnak (ami csak keresztezi a régiót, de máshol végződik)
@@ -29,9 +25,7 @@ def _is_true_projection(endpoint_count: int, branch_point_count: int) -> bool:
             branch_point_count >= MIN_BRANCH_POINTS_FOR_PROJECTION)
 
 
-# =============================================================================
 # ADATSTRUKTÚRÁK
-# =============================================================================
 
 @dataclass
 class RegionResult:
@@ -124,9 +118,7 @@ class CellAnalysisResult:
     coords: dict = field(default_factory=dict)
 
 
-# =============================================================================
 # FŐ ANALÍZIS FÜGGVÉNY
-# =============================================================================
 
 def run_analysis(
         swc_df: pd.DataFrame,
@@ -281,9 +273,7 @@ def run_analysis(
     )
 
 
-# =============================================================================
 # SZŰRÉS KOMPLEX LOGIKÁVAL
-# =============================================================================
 
 def apply_filter(
         result: CellAnalysisResult,
@@ -336,9 +326,7 @@ def apply_filter(
     return result
 
 
-# =============================================================================
 # EXPORTÁLÁS
-# =============================================================================
 
 def results_to_dataframe(
         results: list[tuple[str, CellAnalysisResult]],
@@ -366,9 +354,7 @@ def results_to_dataframe(
     return pd.DataFrame(rows)
 
 
-# =============================================================================
 # KÉRGI VETÍTÉSI ÖSSZESÍTŐ (a Nóra által kért végleges táblázatok)
-# =============================================================================
 # Ez a modul EGYBŐL a helyes összesítőket állítja elő, kézi táblázat-építés nélkül:
 #   - "agytörzs = 100%" (PT sejtek a nevezőben)  -> bs_benne
 #   - "összes L5 = 100%" (agytörzs-feltétel nélkül) -> bs_nelkul

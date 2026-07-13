@@ -1,7 +1,5 @@
-# =============================================================================
 # KONFIGURÁCIÓ - Minden útvonal és konstans itt van definiálva.
 # Ha szerverre költözik az alkalmazás, CSAK ezt a fájlt kell módosítani.
-# =============================================================================
 
 import os
 

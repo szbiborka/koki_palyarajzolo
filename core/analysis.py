@@ -8,57 +8,27 @@ import pandas as pd
 
 from config import (
     VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED,
-    DEFAULT_PROJECTION_DEFINITION,
+    DEFAULT_FILTER,
 )
 
-# A "VALÓDI VETÍTÉS" DEFINÍCIÓJA
-# Egy sejt akkor vetít VALÓDIAN egy régióba, ha ott terminális arborizációt ad:
-# azaz van legalább ennyi végpontja (terminális) ÉS legalább ennyi elágazása.
-# A pusztán ÁTHALADÓ axonnak (ami csak keresztezi a régiót, de máshol végződik)
-# nincs végpontja a régióban -> így nem számít vetítésnek.
-# Régen a kód végpont VAGY elágazás alapján döntött, ezért a főaxon egyetlen
-# elágazása (kollaterális leadása) is "vetítésnek" látszott az áthaladt régióban.
-MIN_ENDPOINTS_FOR_PROJECTION = DEFAULT_PROJECTION_DEFINITION['min_endpoints']
-MIN_BRANCH_POINTS_FOR_PROJECTION = DEFAULT_PROJECTION_DEFINITION['min_branch_points']
-
-
-@dataclass(frozen=True)
-class ProjectionDefinition:
-    """
-    A vetítés GLOBÁLIS definíciója: hány végpont és hány elágazás kell ahhoz,
-    hogy egy sejtet az adott régióba vetítőnek tekintsünk.
-
-    Ez az egyetlen igazságforrás: ugyanez hajtja a "..._projects" oszlopot, a
-    szűrést és az összesítő táblákat. Így nem fordulhat elő, hogy a pipa és a
-    passes_filter ellentmond egymásnak.
-    """
-    min_endpoints: int = MIN_ENDPOINTS_FOR_PROJECTION
-    min_branch_points: int = MIN_BRANCH_POINTS_FOR_PROJECTION
-
-    def is_projection(self, endpoint_count: int, branch_point_count: int) -> bool:
-        return (endpoint_count >= self.min_endpoints and
-                branch_point_count >= self.min_branch_points)
-
-    def describe(self) -> str:
-        """Rövid, emberi olvasásra szánt leírás (exportokhoz, feliratokhoz)."""
-        parts = []
-        if self.min_endpoints > 0:
-            parts.append(f"≥{self.min_endpoints} endpoint")
-        if self.min_branch_points > 0:
-            parts.append(f"≥{self.min_branch_points} branch point")
-        return " AND ".join(parts) if parts else "any axon presence"
-
-    def slug(self) -> str:
-        """Fájlnévbe illeszthető rövid azonosító (pl. 'ep1_br1')."""
-        return f"ep{self.min_endpoints}_br{self.min_branch_points}"
-
-
-DEFAULT_DEFINITION = ProjectionDefinition()
+# A VETÍTÉS DEFINÍCIÓJA - EGYETLEN HELYEN
+# Régiónként EGY kritériumkészlet (FilterCriteria) mondja meg, mi számít
+# vetítésnek. Ugyanez hajtja a "..._projects" pipát, a szűrést és az összesítő
+# táblákat is - nincs külön "globális definíció" és külön "szűrő", amik
+# ellentmondhatnának egymásnak.
+#
+# Alapértelmezés: legalább 1 végpont ÉS legalább 1 elágazás = valódi terminális
+# arborizáció. A pusztán ÁTHALADÓ axonnak (ami csak keresztezi a régiót, de
+# máshol végződik) nincs végpontja a régióban -> nem számít vetítésnek.
+# A küszöbök emelésével szigorítható, az elágazás 0-ra állításával lazítható.
+MIN_ENDPOINTS_FOR_PROJECTION = DEFAULT_FILTER['min_endpoints']
+MIN_BRANCH_POINTS_FOR_PROJECTION = DEFAULT_FILTER['min_branch_points']
 
 
 def _is_true_projection(endpoint_count: int, branch_point_count: int) -> bool:
-    """Az alapértelmezett definíció szerinti valódi terminális arborizáció."""
-    return DEFAULT_DEFINITION.is_projection(endpoint_count, branch_point_count)
+    """Az alapértelmezett kritérium szerinti valódi terminális arborizáció."""
+    return (endpoint_count >= MIN_ENDPOINTS_FOR_PROJECTION and
+            branch_point_count >= MIN_BRANCH_POINTS_FOR_PROJECTION)
 
 
 # ADATSTRUKTÚRÁK
@@ -82,11 +52,19 @@ class RegionResult:
 @dataclass
 class FilterCriteria:
     """
-    A felhasználó által megadott szűrési feltételek egy célterületre,
-    kiegészítve a halmazműveleti logikával (AND, OR, NOT).
+    EGY régió vetítési kritériuma - és egyben a szűrési feltétel.
+
+    Ez az egyetlen hely, ahol eldől, mi számít vetítésnek az adott régióban.
+    Ugyanez hajtja a "..._projects" pipát, a szűrést (passes_filter) és az
+    összesítő táblákat, tehát nem lehet közöttük ellentmondás.
+
+    Alapértelmezés: >=1 végpont ÉS >=1 elágazás (valódi terminális arborizáció).
+    A számok emelésével szigorítható; az elágazás 0-ra állításával lazítható
+    "csak végpont" logikára. Az operator (AND/NOT/OR) NEM a vetítés definíciója,
+    hanem azt mondja meg, hogyan kombináljuk a régiókat egymással.
     """
-    min_endpoints: int = 0
-    min_branch_points: int = 0
+    min_endpoints: int = MIN_ENDPOINTS_FOR_PROJECTION
+    min_branch_points: int = MIN_BRANCH_POINTS_FOR_PROJECTION
     min_axon_length_um: float = 0
     # Méret-független küszöb: a régió végpontjainak minimális aránya a sejt összes
     # végpontjához képest [0..1]. NOT operátorral párosítva ez a L6-szűrő:
@@ -94,60 +72,49 @@ class FilterCriteria:
     min_endpoint_fraction: float = 0.0
     operator: str = 'AND'  # 'AND', 'OR', 'NOT'
 
-    def _has_threshold(self) -> bool:
-        """Van-e legalább egy tényleges numerikus küszöb beállítva."""
-        return (self.min_endpoints > 0 or
-                self.min_branch_points > 0 or
-                self.min_axon_length_um > 0 or
-                self.min_endpoint_fraction > 0)
+    def is_projection(self, endpoint_count: int, branch_point_count: int,
+                      axon_length_um: float = 0.0, endpoint_fraction: float = 0.0) -> bool:
+        """Vetít-e ide a sejt E SZERINT a kritérium szerint (minden feltétel EGYSZERRE)."""
+        return (endpoint_count >= self.min_endpoints and
+                branch_point_count >= self.min_branch_points and
+                axon_length_um >= self.min_axon_length_um and
+                endpoint_fraction >= self.min_endpoint_fraction)
 
     def is_active(self) -> bool:
         """
-        Aktív-e a feltétel (részt vesz-e a szűrésben).
-
-        JAVÍTVA (pitfall #2): korábban a 'Required (AND)' szabály küszöb nélkül
-        INAKTÍV volt, így némán eldobtuk. Emiatt a "vetítsen a GPe-be (AND)"
-        elvárás semmit nem csinált, ha nem állítottak be hozzá számot; ráadásul
-        egy másik (pl. L6 = NOT) feltétel bekapcsolása hirtelen "aktívvá" tette az
-        egész szűrőt, megváltoztatva a számlálás alapját - így fordulhatott elő,
-        hogy egy KIZÁRÓ szűrő hatására NŐTT egy régió sejtszáma.
-
-        Most minden EXPLICIT operátor aktív: az AND azt jelenti, "ide vetítenie
-        kell" (valódi végpont+elágazás), a NOT azt, "ide nem vetíthet", az OR
-        pedig az opcionális uniót. A küszöbök ezt csak tovább szigorítják.
+        Minden EXPLICIT szabály részt vesz a szűrésben: az AND azt jelenti,
+        "ide vetítenie kell", a NOT azt, "ide nem vetíthet", az OR az opcionális
+        uniót. (Korábban a küszöb nélküli AND némán kimaradt, ami miatt egy
+        kizáró szűrőtől NŐHETETT egy régió sejtszáma.)
         """
         return True
 
     def meets_thresholds(self, region_result: 'RegionResult') -> bool:
         """
-        Kiértékeli, hogy a régió önmagában megüti-e a küszöböt.
+        A régió teljesíti-e a kritériumot.
 
-        JAVÍTVA: a küszöbök csak SZIGORÍTHATNAK, lazítani nem tudnak. Elsőként
-        mindig a globális vetítés-definíciónak kell teljesülnie (projects_here),
-        és csak utána jönnek a régiónkénti extra küszöbök.
-
-        Enélkül előfordulhatott, hogy valaki "min. 1 végpontot" állított be
-        (az elágazást 0-n hagyva), és egy 1 végpont / 0 elágazás sejt ÁTMENT a
-        szűrőn, miközben a "..._projects" pipa üres maradt - vagyis a táblázat
-        önmagának mondott ellent. Ha valóban lazítani szeretnénk (pl. csak
-        végpont kelljen), azt a GLOBÁLIS vetítés-definícióban kell megtenni,
-        amit az oszlop és a szűrő egyszerre követ.
+        A projects_here-t MÁR ezzel a kritériummal számoltuk ki a run_analysis-ben,
+        ezért itt egyszerűen azt olvassuk vissza. Így a pipa és a szűrő
+        definíció szerint ugyanaz - nem tudnak ellentmondani egymásnak.
         """
-        if not region_result.projects_here:
-            return False
+        return region_result.projects_here
 
-        if not self._has_threshold():
-            return True
+    def describe(self) -> str:
+        """Rövid, emberi olvasásra szánt leírás (exportokhoz, feliratokhoz)."""
+        parts = []
+        if self.min_endpoints > 0:
+            parts.append(f"≥{self.min_endpoints} endpoint")
+        if self.min_branch_points > 0:
+            parts.append(f"≥{self.min_branch_points} branch point")
+        if self.min_axon_length_um > 0:
+            parts.append(f"≥{self.min_axon_length_um:g} µm axon")
+        if self.min_endpoint_fraction > 0:
+            parts.append(f"≥{self.min_endpoint_fraction * 100:g}% endpoint share")
+        return " AND ".join(parts) if parts else "any axon presence"
 
-        if region_result.endpoint_count < self.min_endpoints:
-            return False
-        if region_result.branch_point_count < self.min_branch_points:
-            return False
-        if region_result.axon_length_um < self.min_axon_length_um:
-            return False
-        if region_result.endpoint_fraction < self.min_endpoint_fraction:
-            return False
-        return True
+    def slug(self) -> str:
+        """Fájlnévbe illeszthető rövid azonosító (pl. 'ep1_br1')."""
+        return f"ep{self.min_endpoints}_br{self.min_branch_points}"
 
 
 @dataclass
@@ -172,12 +139,13 @@ def run_analysis(
         target_region_ids: list[int],
         region_descendants: dict[int, set[int]] | None = None,
         region_names: dict[int, str] | None = None,
-        projection_definition: 'ProjectionDefinition | None' = None
+        criteria_per_region: dict[int, 'FilterCriteria'] | None = None
 ) -> CellAnalysisResult:
     """
-    projection_definition: a vetítés globális definíciója (hány végpont / elágazás
-    kell). Ha None, az alapértelmezés (1 végpont ÉS 1 elágazás) érvényes. Ez hajtja
-    a projects_here értéket, így a szűrés és az összesítők is ezt követik.
+    criteria_per_region: régiónkénti vetítési kritérium. Ez határozza meg a
+    projects_here értéket, így a szűrés és az összesítők is pontosan ezt követik.
+    Ha egy régióhoz nincs megadva, az alapértelmezés (>=1 végpont ÉS >=1 elágazás)
+    érvényes.
 
     region_descendants: opcionális {régió_id -> {atlasz ID-k halmaza}} leképezés
     (lásd loader.build_region_descendants). Ha meg van adva, egy célterület
@@ -244,7 +212,8 @@ def run_analysis(
     total_endpoint_count = int(len(ep_idx))
     region_descendants = region_descendants or {}
     region_names = region_names or {}
-    proj_def = projection_definition or DEFAULT_DEFINITION
+    criteria_per_region = criteria_per_region or {}
+    default_criteria = FilterCriteria()
 
     def _match_ids(region_id: int) -> np.ndarray:
         """A régióhoz tartozó atlasz-ID-k (önmaga + leszármazottai, ha van hierarchia)."""
@@ -279,9 +248,12 @@ def run_analysis(
 
         return RegionResult(
             region_id=int(region_id), region_name=region_name,
-            # A globális vetítés-definíció dönt (alapból: végpont ÉS elágazás) -
-            # így az áthaladó axonok nem számítanak hamis vetítésnek.
-            projects_here=proj_def.is_projection(ep_count, br_count),
+            # A régió SAJÁT kritériuma dönt (alapból: végpont ÉS elágazás) - így az
+            # áthaladó axonok nem számítanak hamis vetítésnek, és a pipa pontosan
+            # ugyanazt mutatja, amit a szűrő is használ.
+            projects_here=criteria_per_region.get(
+                int(region_id), default_criteria
+            ).is_projection(ep_count, br_count, axon_len, fraction),
             endpoint_count=ep_count, branch_point_count=br_count,
             projection_point_count=proj_count, axon_length_um=axon_len,
             endpoint_fraction=fraction,
@@ -383,9 +355,9 @@ def results_to_dataframe(
         results: list[tuple[str, CellAnalysisResult]],
         target_region_ids: list[int],
         dictionary: pd.DataFrame,
-        projection_definition: 'ProjectionDefinition | None' = None
+        criteria_per_region: dict[int, 'FilterCriteria'] | None = None
 ) -> pd.DataFrame:
-    proj_def = projection_definition or DEFAULT_DEFINITION
+    criteria_per_region = criteria_per_region or {}
     rows = []
     for cell_name, result in results:
         row = {
@@ -393,8 +365,6 @@ def results_to_dataframe(
             'soma_region': result.soma_region_name,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
-            # Önmagát dokumentáló oszlop: melyik vetítés-definícióval készült.
-            'projection_definition': proj_def.describe(),
         }
         for tr in result.target_results:
             safe_col = tr.region_name.replace(' ', '_').lower()[:30]
@@ -405,6 +375,10 @@ def results_to_dataframe(
             # Végpont-arány %-ban - ez alapján azonosíthatók a L6 sejtek
             # (pl. thalamus-arány > 2.5%).
             row[f'{safe_col}_endpoint_pct'] = round(tr.endpoint_fraction * 100, 2)
+            # Önmagát dokumentáló oszlop: milyen kritériummal készült a döntés.
+            crit = criteria_per_region.get(tr.region_id)
+            if crit is not None:
+                row[f'{safe_col}_criterion'] = crit.describe()
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -444,7 +418,7 @@ def build_cortical_summary(
         base_region_id: int | None,
         numerator_region_ids: list[int],
         region_label_fn,
-        projection_definition: 'ProjectionDefinition | None' = None,
+        criteria_per_region: dict[int, 'FilterCriteria'] | None = None,
 ) -> dict:
     """
     Kérgi régiónkénti összesítők a Nóra-féle definíciók szerint.
@@ -454,15 +428,16 @@ def build_cortical_summary(
     numerator_region_ids: a célterületek (pl. GPe, TRN), amelyekre a %-ot adjuk.
     region_label_fn: régió_id -> megjelenítendő név.
 
-    projection_definition: csak dokumentálásra - a projects_here értékeket már a
-        run_analysis kiszámolta ezzel a definícióval. A leírás bekerül a
-        visszaadott 'definition' kulcsba, hogy az export önmagát dokumentálja.
+    criteria_per_region: csak dokumentálásra - a projects_here értékeket már a
+        run_analysis kiszámolta ezekkel a kritériumokkal. A leírás bekerül a
+        visszaadott 'criteria_note' / 'slug' kulcsokba, hogy az export önmagát
+        dokumentálja.
 
-    Visszatér: {'benne', 'nelkul', 'axon', 'categories', 'definition'}.
+    Visszatér: {'benne', 'nelkul', 'axon', 'categories', 'criteria_note', 'slug'}.
     """
     from collections import defaultdict
 
-    proj_def = projection_definition or DEFAULT_DEFINITION
+    criteria_per_region = criteria_per_region or {}
 
     groups: dict[str, list] = defaultdict(list)
     for name, r in results:
@@ -540,5 +515,25 @@ def build_cortical_summary(
     if len(numerator_region_ids) > 1:
         categories["All targets"] = pd.DataFrame(cat_all_rows).sort_values("All targets Projects", ascending=False)
 
+    # Az exportok önmagukat dokumentálják: melyik régió milyen kritériummal ment.
+    involved = ([base_region_id] if base_region_id is not None else []) + list(numerator_region_ids)
+    used = [criteria_per_region.get(rid, FilterCriteria()) for rid in involved]
+    uniform = all(
+        (c.min_endpoints, c.min_branch_points, c.min_axon_length_um, c.min_endpoint_fraction) ==
+        (used[0].min_endpoints, used[0].min_branch_points,
+         used[0].min_axon_length_um, used[0].min_endpoint_fraction)
+        for c in used
+    ) if used else True
+
+    if uniform and used:
+        criteria_note = used[0].describe()
+        slug = used[0].slug()
+    else:
+        criteria_note = " · ".join(
+            f"{region_label_fn(rid)}: {criteria_per_region.get(rid, FilterCriteria()).describe()}"
+            for rid in involved
+        )
+        slug = "mixed"
+
     return {"benne": benne, "nelkul": nelkul, "axon": axon,
-            "categories": categories, "definition": proj_def}
+            "categories": categories, "criteria_note": criteria_note, "slug": slug}

@@ -9,7 +9,6 @@ import pandas as pd
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
     BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME,
-    DEFAULT_PROJECTION_DEFINITION,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
@@ -19,7 +18,7 @@ from core.loader import (
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
-    build_cortical_summary, ProjectionDefinition
+    build_cortical_summary
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
@@ -355,54 +354,19 @@ with st.sidebar:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # 1b. What counts as a projection — GLOBAL definition
+    # 2. Projection criteria & set logic (AND/OR/NOT), per region
     # -------------------------------------------------------------------------
-    # Ez az egyetlen igazságforrás: ugyanez hajtja a "..._projects" oszlopot, a
-    # szűrést és az összesítő táblákat, így nem lehet ellentmondás közöttük.
-    st.markdown("**Projection Definition**",
-                help="What counts as a projection, everywhere in the app: the projection "
-                     "checkboxes, the filter, and the summary tables all follow this single "
-                     "rule. Lower the branch-point requirement to 0 for an endpoint-only "
-                     "definition.")
-    with st.expander("What counts as a projection?", expanded=False):
-        st.caption(
-            "Default — **≥1 endpoint AND ≥1 branch point** — means a genuine terminal "
-            "arborization. An axon that only crosses a region (branching there but "
-            "terminating elsewhere) is correctly excluded."
-        )
-        def_ep = st.number_input(
-            "Min. endpoints to count as a projection", min_value=0,
-            value=int(DEFAULT_PROJECTION_DEFINITION['min_endpoints']), step=1,
-            key="projdef_ep",
-            help="Axon terminals that must fall inside the region."
-        )
-        def_br = st.number_input(
-            "Min. branch points to count as a projection", min_value=0,
-            value=int(DEFAULT_PROJECTION_DEFINITION['min_branch_points']), step=1,
-            key="projdef_br",
-            help="Set to 0 for an 'endpoint only' definition — looser, but it also counts "
-                 "axons that terminate in the region without branching there."
-        )
-
-    projection_definition = ProjectionDefinition(
-        min_endpoints=int(def_ep), min_branch_points=int(def_br)
+    # EGY hely dönt arról, mi számít vetítésnek: ugyanezek a számok hajtják a
+    # "..._projects" pipát, a szűrést és az összesítő táblákat is.
+    st.markdown("**Projection Criteria**",
+                help="What counts as a projection in each region. These same numbers drive "
+                     "the projection check marks, the filter and the summary tables, so they "
+                     "can never disagree.")
+    st.caption(
+        "Default is **≥1 endpoint AND ≥1 branch point** — a genuine terminal arborization, "
+        "so an axon that merely passes through is not counted. Raise the numbers to be "
+        "stricter, or set branch points to 0 for an endpoint-only rule."
     )
-    st.caption(f"Current definition: **{projection_definition.describe()}**")
-    if def_br == 0 and def_ep <= 1:
-        st.warning(
-            "Endpoint-only definition: axons that end in the region without branching "
-            "are now counted as projections.", icon="⚠️"
-        )
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # 2. Filter Criteria & Logic (AND/OR/NOT)
-    # -------------------------------------------------------------------------
-    st.markdown("**Projection Filter Criteria**",
-                help="Extra, per-region constraints ON TOP of the projection definition "
-                     "above. These can only narrow the selection further — they never "
-                     "loosen it, so the projection checkbox and the filter always agree.")
 
     criteria_per_region: dict[int, FilterCriteria] = {}
 
@@ -437,12 +401,15 @@ with st.sidebar:
 
                 min_ep = st.number_input(
                     "Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
-                    help=f"At least this many axon endpoints must fall within the {short_name} region for the projection to be considered valid.",
+                    help=f"Axon terminals that must fall inside {short_name} for the cell to "
+                         f"count as projecting there.",
                     key=f"filter_ep_{region_id}"
                 )
                 min_br = st.number_input(
                     "Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'], step=1,
-                    help="At least this many branch points are required within the region.",
+                    help=f"Branch points required inside {short_name}. Together with the "
+                         f"endpoints this defines a real terminal arborization; set to 0 for "
+                         f"an endpoint-only rule.",
                     key=f"filter_br_{region_id}"
                 )
                 min_len = st.number_input(
@@ -470,6 +437,16 @@ with st.sidebar:
                     min_endpoint_fraction=float(min_ep_pct) / 100.0,
                     operator=op  # Átadjuk az operátort a backendnek
                 )
+                # Élő visszajelzés: pontosan ez a szabály dönt a pipáról ÉS a szűrésről.
+                st.caption(
+                    f"➜ Counts as projecting to {short_name} when: "
+                    f"**{criteria_per_region[region_id].describe()}**"
+                )
+                if int(min_ep) == 0 and int(min_br) == 0:
+                    st.warning(
+                        "With both at 0, any axon presence counts — including axons that "
+                        "merely pass through.", icon="⚠️"
+                    )
 
     st.divider()
 
@@ -599,7 +576,7 @@ if run_button:
     st.session_state['criteria_per_region'] = criteria_per_region
     # Elmentjük a futtatáskor érvényes definíciót, hogy a megjelenítés és az
     # exportok pontosan azt tükrözzék, amivel az eredmények készültek.
-    st.session_state['projection_definition'] = projection_definition
+    st.session_state['criteria_used'] = criteria_per_region
 
     # A célterületek szülő->leszármazott feloldása (pl. Brain stem, Thalamus az
     # összes alárendelt magjukra). Egyszer építjük fel, minden sejtre ezt használjuk.
@@ -613,7 +590,7 @@ if run_button:
         try:
             swc_df = load_swc(filepath)
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
-                                  region_descendants, region_names, projection_definition)
+                                  region_descendants, region_names, criteria_per_region)
             result = apply_filter(result, criteria_per_region)
             if len(st.session_state['results']) >= 60:
                 result.coords = {}
@@ -634,7 +611,7 @@ if 'results' in st.session_state and st.session_state['results']:
     saved_criteria = st.session_state.get('criteria_per_region', {})
     filter_was_active = any(c.is_active() for c in saved_criteria.values())
     # A futtatáskor érvényes vetítés-definíció (nem a jelenlegi sidebar állapot).
-    saved_def = st.session_state.get('projection_definition', ProjectionDefinition())
+    criteria_used = st.session_state.get('criteria_used', saved_criteria)
 
     st.divider()
 
@@ -811,7 +788,7 @@ if 'results' in st.session_state and st.session_state['results']:
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Detailed Batch Data")
 
-            summary_df = results_to_dataframe(results, selected_region_ids, dictionary, saved_def)
+            summary_df = results_to_dataframe(results, selected_region_ids, dictionary, criteria_used)
             if filter_was_active:
                 summary_df = summary_df.sort_values('passes_filter', ascending=False)
 
@@ -824,13 +801,10 @@ if 'results' in st.session_state and st.session_state['results']:
         with tab_summary:
             section_header("Cortical Projection Summary")
             st.caption(
-                f"Ready-to-send tables, per cortical region. A cell counts as projecting when "
-                f"it has **{saved_def.describe()}** in the region. Percentages use this "
-                f"definition directly — independent of the per-region filter rules — so there "
-                f"is no Layer-6 over-removal and no wrong denominator."
+                "Ready-to-send tables, per cortical region. Cells are counted with the same "
+                "projection criteria shown in the sidebar — and each percentage is taken "
+                "against the population base you choose below, so there is no wrong denominator."
             )
-            st.info(f"**Projection definition used for these tables:** {saved_def.describe()}  \n"
-                    f"It is recorded in every downloaded file name (`{saved_def.slug()}`).")
 
 
             def _region_label(rid: int) -> str:
@@ -862,8 +836,10 @@ if 'results' in st.session_state and st.session_state['results']:
                 st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
             else:
                 summary = build_cortical_summary(results, base_id, numerator_ids,
-                                                 _region_label, saved_def)
-                tag = saved_def.slug()  # pl. 'ep1_br1' - a definíció a fájlnévben
+                                                 _region_label, criteria_used)
+                tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
+                st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
+                        f"Recorded in every downloaded file name (`{tag}`).")
 
                 st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
                 st.dataframe(summary['benne'], use_container_width=True, hide_index=True)

@@ -403,6 +403,11 @@ with st.sidebar:
                 help="Extra, per-region constraints ON TOP of the projection definition "
                      "above. These can only narrow the selection further — they never "
                      "loosen it, so the projection checkbox and the filter always agree.")
+    st.caption(
+        f"**0 means 'nothing extra'** — not 'nothing required'. Every region already "
+        f"requires **{projection_definition.describe()}** from the Projection Definition "
+        f"above. The values below only add *further* requirements on top."
+    )
 
     criteria_per_region: dict[int, FilterCriteria] = {}
 
@@ -436,15 +441,23 @@ with st.sidebar:
                 op = RULE_OPERATORS[rule_label]
 
                 min_ep = st.number_input(
-                    "Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
-                    help=f"At least this many axon endpoints must fall within the {short_name} region for the projection to be considered valid.",
+                    "Additional min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
+                    help=f"Extra endpoints required in {short_name}, beyond the "
+                         f"{projection_definition.min_endpoints} already required by the "
+                         f"Projection Definition. 0 = no extra requirement.",
                     key=f"filter_ep_{region_id}"
                 )
                 min_br = st.number_input(
-                    "Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'], step=1,
-                    help="At least this many branch points are required within the region.",
+                    "Additional min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'], step=1,
+                    help=f"Extra branch points required in {short_name}, beyond the "
+                         f"{projection_definition.min_branch_points} already required by the "
+                         f"Projection Definition. 0 = no extra requirement.",
                     key=f"filter_br_{region_id}"
                 )
+                # Élő visszajelzés: mi a TÉNYLEGES küszöb (definíció + extra).
+                eff_ep = max(int(min_ep), projection_definition.min_endpoints)
+                eff_br = max(int(min_br), projection_definition.min_branch_points)
+                st.caption(f"➜ Effective for {short_name}: **≥{eff_ep} endpoint(s) AND ≥{eff_br} branch point(s)**")
                 min_len = st.number_input(
                     "Min. axon length (µm)", min_value=0.0, value=float(DEFAULT_FILTER['min_axon_length_um']),
                     step=10.0,

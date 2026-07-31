@@ -57,34 +57,26 @@ BRAINSTEM_MOTOR_NAME = "Brain stem descending — Midbrain+Hindbrain (excl. thal
 BRAINSTEM_MOTOR_ACRONYM = "BS-desc"
 BRAINSTEM_MOTOR_COMPONENTS = [313, 1065]  # Midbrain (MB), Hindbrain (HB)
 
-# --- A VETÍTÉS GLOBÁLIS DEFINÍCIÓJA ---
-# Ez az EGYETLEN hely, ahol eldől, mi számít vetítésnek. Ugyanez hajtja a
-# "..._projects" oszlopot, a szűrést (passes_filter) és a Cortical Summary
-# táblákat is - így soha nem fordulhat elő, hogy a pipa és a szűrő ellentmond
-# egymásnak (ez volt a korábbi hiba: a beépített "végpont ÉS elágazás" szabály
-# és az oldalsávban megadott küszöbök két külön definíciót jelentettek).
-#
-# Alapértelmezés: legalább 1 végpont ÉS legalább 1 elágazás = valódi terminális
-# arborizáció. Az elágazás 0-ra állításával lazítható "csak végpont" logikára.
-DEFAULT_PROJECTION_DEFINITION = {
-    'min_endpoints': 1,      # Minimum végpont a régióban, hogy vetítésnek számítson
-    'min_branch_points': 1,  # Minimum elágazás a régióban, hogy vetítésnek számítson
-}
-
 # --- Sejttípus kódok az SWC formátumban ---
 # Ez a szabványos SWC specifikáció szerint van definiálva.
 SWC_TYPE_SOMA = 1
 SWC_TYPE_AXON = 2
 SWC_TYPE_AXON_UNDEFINED = 0  # Egyes fájlokban a 0-ás típus is axont jelöl
 
-# --- Szűrési alapértelmezések ---
-# Ezeket mutatja a UI alapból; a felhasználó megváltoztathatja.
-# A 0 értékek azt jelentik, hogy nincs szűrés (minden sejt átmegy).
+# --- A VETÍTÉS KRITÉRIUMA (egyben a szűrés alapértelmezése) ---
+# Régiónként EGY kritériumkészlet mondja meg, mi számít vetítésnek. Ugyanez hajtja
+# a "..._projects" pipát, a szűrést és az összesítő táblákat is, tehát nem lehet
+# közöttük ellentmondás.
+#
+# Alapértelmezés: >=1 végpont ÉS >=1 elágazás = valódi terminális arborizáció.
+# Az áthaladó axon (ami csak keresztezi a régiót, de máshol végződik) így nem
+# számít vetítésnek. A számok emelésével szigorítható, az elágazás 0-ra
+# állításával lazítható "csak végpont" logikára.
 DEFAULT_FILTER = {
-    'min_endpoints': 0,       # Minimum végpontok száma a célterületen
-    'min_branch_points': 0,   # Minimum elágazási pontok száma a célterületen
-    'min_axon_length_um': 0,  # Minimum axonhossz mikrométerben a célterületen
-    'min_endpoint_fraction': 0.0,  # Minimum végpont-arány [0..1] a célterületen (L6-szűrő)
+    'min_endpoints': 1,       # Minimum végpontok száma a célterületen
+    'min_branch_points': 1,   # Minimum elágazási pontok száma a célterületen
+    'min_axon_length_um': 0,  # Minimum axonhossz mikrométerben (0 = nincs feltétel)
+    'min_endpoint_fraction': 0.0,  # Minimum végpont-arány [0..1] (0 = nincs feltétel; L6-szűrő)
 }
 
 # --- Vizualizációs beállítások ---

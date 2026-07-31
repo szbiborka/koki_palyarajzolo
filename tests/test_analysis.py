@@ -321,26 +321,27 @@ def test_cortical_summary_denominator():
 def test_filter_never_contradicts_projection_flag():
     from core.analysis import RegionResult, CellAnalysisResult, apply_filter
 
-    # "min. 1 végpont", az elágazás 0-n hagyva -> ez korábban LAZÍTOTT a definíción
-    crit = {TRN: FilterCriteria(min_endpoints=1, min_branch_points=0, operator='AND')}
+    # ALAPÉRTELMEZETT kritérium (>=1 végpont ÉS >=1 elágazás)
+    crit = {TRN: FilterCriteria(operator='AND')}
 
-    # 1 végpont, 0 elágazás -> az alapértelmezett definíció szerint NEM vetítés
-    tr = RegionResult(TRN, 'TRN', projects_here=False, endpoint_count=1,
-                      branch_point_count=0, projection_point_count=1,
-                      axon_length_um=300.0)
+    # 1 végpont, 0 elágazás -> e szerint NEM vetítés
+    tr = RegionResult(TRN, 'TRN',
+                      projects_here=crit[TRN].is_projection(1, 0, 300.0, 0.0),
+                      endpoint_count=1, branch_point_count=0,
+                      projection_point_count=1, axon_length_um=300.0)
     cell = CellAnalysisResult(1, 'M2', (0, 0, 0), [tr], [], 5000.0)
     apply_filter(cell, crit)
 
-    assert crit[TRN].meets_thresholds(tr) is False, "a küszöb nem lazíthat a definíción"
+    assert tr.projects_here is False
+    assert crit[TRN].meets_thresholds(tr) is False
     assert cell.passes_filter is False
     # A lényeg: a pipa és a szűrő SOSEM mondhat ellent egymásnak.
     assert not (cell.passes_filter and not tr.projects_here)
 
 
 def test_projection_definition_is_global_and_consistent():
-    """Ha a GLOBÁLIS definíciót lazítjuk 'csak végpont'-ra, a pipa is követi."""
-    from core.loader import build_region_descendants
-    from core.analysis import ProjectionDefinition, apply_filter
+    """Ha a kritériumot lazítjuk 'csak végpont'-ra, a pipa is követi."""
+    from core.analysis import apply_filter
 
     atlas, dic = _atlas(), _dictionary()
     # Axon, ami a TRN-ben végződik, de ott NEM ágazik el (1 végpont, 0 elágazás)
@@ -357,17 +358,17 @@ def test_projection_definition_is_global_and_consistent():
     assert t_strict.endpoint_count == 1 and t_strict.branch_point_count == 0
     assert t_strict.projects_here is False
 
-    # (b) Lazított GLOBÁLIS definíció: csak végpont kell -> vetítés,
+    # (b) Lazított kritérium: csak végpont kell -> vetítés,
     #     és a szűrő is ezt látja (nincs ellentmondás)
-    loose = run_analysis(cell, atlas, dic, [TRN],
-                         projection_definition=ProjectionDefinition(1, 0))
+    loose_crit = {TRN: FilterCriteria(min_endpoints=1, min_branch_points=0, operator='AND')}
+    loose = run_analysis(cell, atlas, dic, [TRN], criteria_per_region=loose_crit)
     t_loose = loose.target_results[0]
     assert t_loose.projects_here is True
 
-    apply_filter(loose, {TRN: FilterCriteria(min_endpoints=1, operator='AND')})
+    apply_filter(loose, loose_crit)
     assert loose.passes_filter is True
-    assert ProjectionDefinition(1, 0).slug() == "ep1_br0"
-    assert "endpoint" in ProjectionDefinition(1, 0).describe()
+    assert FilterCriteria(1, 0).slug() == "ep1_br0"
+    assert "endpoint" in FilterCriteria(1, 0).describe()
 
 
 if __name__ == "__main__":

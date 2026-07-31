@@ -22,18 +22,18 @@ Load any SWC file and get a full breakdown per target region: how many endpoints
 ### Batch analysis
 Select any number of cells at once and run the analysis across all of them. Results appear as a sortable table (one row per cell, one column set per region) that you can download as a CSV for further work in Excel or Python.
 
-### One projection definition, everywhere
-A single sidebar control — **Projection Definition** — decides what counts as a projection: the minimum number of endpoints and branch points inside a region (default **≥1 endpoint AND ≥1 branch point**, i.e. a genuine terminal arborization). That one rule drives the `..._projects` columns, the filter (`passes_filter`) and the Cortical Summary alike, so the tick boxes and the selection can never disagree.
+### One projection criterion per region
+Each target region has **one** set of numbers that defines what counts as a projection there:
+- minimum number of axon endpoints in the region — default **1**
+- minimum number of branch points in the region — default **1**
+- minimum total axon length in the region (µm) — default 0 (no constraint)
+- minimum share of the cell's endpoints falling in the region (%) — default 0 (no constraint)
 
-Per-region filter criteria (below) are *additional* constraints layered on top: they can only narrow the selection, never loosen it. To loosen — for example to an endpoint-only definition that also counts axons terminating in a region without branching there — change the global definition (set min branch points to 0); the checkboxes, the filter and the summary tables all follow together. The definition in force is written into every exported file name (e.g. `bs_benne_ep1_br1.csv`) and into a `projection_definition` column in the detailed batch export.
+All conditions must be met simultaneously. The default (**≥1 endpoint AND ≥1 branch point**) means a genuine terminal arborization, so an axon that merely passes through — or that branches there only to send a collateral onward — is not counted. Raise the numbers to be stricter, or set branch points to 0 for an endpoint-only rule.
 
-### Flexible projection filters
-For each target region independently, you can set:
-- minimum number of axon endpoints in the region
-- minimum number of branch points in the region
-- minimum total axon length in the region (µm)
+Crucially these same numbers drive the `..._projects` check marks, the filter (`passes_filter`) **and** the Cortical Summary, so they can never disagree with each other. The condition rule (Required / Excluded / Optional) is separate: it says how regions combine, not what counts as a projection. The criteria in force are written into every exported summary file name (e.g. `bs_benne_ep1_br1.csv`) and into a per-region `..._criterion` column in the detailed batch export.
 
-All conditions must be met simultaneously. In batch mode, cells that do not meet the criteria are clearly flagged in the results table with a separate color.
+In batch mode, cells that do not meet the criteria are clearly flagged in the results table with a separate color.
 
 ### Cortical projection summary (batch mode)
 The **Cortical Summary** tab turns a batch run into the finished, ready-to-send tables — no spreadsheet assembly. You pick a **population base region** (typically "Brain stem (descending)", which defines the pyramidal-tract cells), and every remaining target region (GPe, TRN, …) becomes a numerator. It then produces, per cortical soma region:

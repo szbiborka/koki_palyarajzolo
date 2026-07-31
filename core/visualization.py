@@ -34,12 +34,17 @@ def _build_axon_trace(
         curr_idx: np.ndarray, parent_row_indices: np.ndarray,
         is_axon: np.ndarray, point_regions: np.ndarray,
         region_color_map: dict[int, str], line_width: int = 2,
-        allowed_regions: set | None = None,  # ÚJ PARAMÉTER AZ EXCLUSIVE NÉZETHEZ
+        allowed_regions: set | None = None,
+        downsample_factor: int = 1  # ÚJ PARAMÉTER: Pontok ritkítása
 ) -> list[go.Scatter3d]:
     segments_by_color: dict[str, tuple[list, list, list]] = {}
 
-    for i in curr_idx:
+    for count, i in enumerate(curr_idx):
         if not is_axon[i]: continue
+
+        # RITKÍTÁS LOGIKA: Ha a faktor > 1, csak minden N-edik szakaszt tartjuk meg
+        if downsample_factor > 1 and count % downsample_factor != 0:
+            continue
 
         # EXCLUSIVE LOGIKA: Eldobjuk a régiót, ha nincs az engedélyezett listában
         region_int = int(point_regions[i])
@@ -53,6 +58,9 @@ def _build_axon_trace(
             segments_by_color[color] = ([], [], [])
 
         xs, ys, zs = segments_by_color[color]
+
+        # A NaN (None) elválasztók miatt a Plotly egyetlen rétegként (trace) kezeli
+        # a megszakított vonalakat is, ami lehetővé teszi az egykattintásos ki/be kapcsolást!
         xs.extend([x[i], x[p_row], None])
         ys.extend([y[i], y[p_row], None])
         zs.extend([z[i], z[p_row], None])
@@ -69,7 +77,7 @@ def _build_axon_trace(
 def build_3d_plot(
         result: CellAnalysisResult, atlas_matrix: np.ndarray, cell_name: str = "",
         show_soma_region: bool = True, show_other_regions: bool = True,
-        show_only_target_regions: bool = False  # ÚJ KAPCSOLÓ
+        show_only_target_regions: bool = False
 ) -> go.Figure:
     coords = result.coords
     x, y, z, is_axon, point_regions = coords['x'], coords['y'], coords['z'], coords['is_axon'], coords['point_regions']
@@ -99,14 +107,14 @@ def build_3d_plot(
                                       f'(other) {other.region_name}'):
                 traces.append(t)
 
-    # --- EXCLUSIVE NÉZET ÁTADÁSA ---
     allowed_regions = None
     if show_only_target_regions:
         allowed_regions = set(tr.region_id for tr in result.target_results)
         allowed_regions.add(result.soma_region_id)
 
+    # Szóló sejtnél nincs szükség ritkításra (downsample_factor = 1)
     traces.extend(_build_axon_trace(x, y, z, curr_idx, parent_row_indices, is_axon, point_regions, region_color_map, 2,
-                                    allowed_regions))
+                                    allowed_regions, downsample_factor=1))
 
     if soma_idx is not None:
         traces.append(go.Scatter3d(
@@ -144,7 +152,7 @@ def build_3d_plot(
 def build_3d_plot_multi(
         results: list[tuple[str, CellAnalysisResult]], atlas_matrix: np.ndarray,
         target_region_ids: list[int], show_target_regions: bool = True,
-        show_only_target_regions: bool = False  # ÚJ KAPCSOLÓ
+        show_only_target_regions: bool = False
 ) -> go.Figure:
     palette, traces = COLORS['region_palette'], []
     region_names = {tr.region_id: tr.region_name for tr in results[0][1].target_results} if results else {}
@@ -160,15 +168,16 @@ def build_3d_plot_multi(
         coords = result.coords
         uniform_color_map = {int(rid): cell_color for rid in np.unique(coords['point_regions'])}
 
-        # --- EXCLUSIVE NÉZET ÁTADÁSA ---
         allowed_regions = None
         if show_only_target_regions:
             allowed_regions = set(target_region_ids)
             allowed_regions.add(result.soma_region_id)
 
+        # RITKÍTÁS ALKALMAZÁSA: downsample_factor=3 drasztikusan csökkenti a memóriaterhelést
         axon_traces = _build_axon_trace(
             coords['x'], coords['y'], coords['z'], coords['curr_idx'], coords['parent_row_indices'],
-            coords['is_axon'], coords['point_regions'], uniform_color_map, 1, allowed_regions
+            coords['is_axon'], coords['point_regions'], uniform_color_map, 1, allowed_regions,
+            downsample_factor=3
         )
         for j, tr in enumerate(axon_traces):
             if j == 0: tr.showlegend, tr.name = True, cell_name

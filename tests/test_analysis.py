@@ -313,6 +313,63 @@ def test_cortical_summary_denominator():
     assert gpe_cat['Projecting Cell IDs'] == "A, B"
 
 
+# ---------------------------------------------------------------------------
+# A VETÍTÉS-DEFINÍCIÓ ÉS A SZŰRŐ MINDIG EGYETÉRT
+# (a szupervizor által észrevett ellentmondás: 1 végpont / 0 elágazás sejt
+#  ÁTMENT a szűrőn, miközben a "..._projects" pipa üres maradt)
+# ---------------------------------------------------------------------------
+def test_filter_never_contradicts_projection_flag():
+    from core.analysis import RegionResult, CellAnalysisResult, apply_filter
+
+    # "min. 1 végpont", az elágazás 0-n hagyva -> ez korábban LAZÍTOTT a definíción
+    crit = {TRN: FilterCriteria(min_endpoints=1, min_branch_points=0, operator='AND')}
+
+    # 1 végpont, 0 elágazás -> az alapértelmezett definíció szerint NEM vetítés
+    tr = RegionResult(TRN, 'TRN', projects_here=False, endpoint_count=1,
+                      branch_point_count=0, projection_point_count=1,
+                      axon_length_um=300.0)
+    cell = CellAnalysisResult(1, 'M2', (0, 0, 0), [tr], [], 5000.0)
+    apply_filter(cell, crit)
+
+    assert crit[TRN].meets_thresholds(tr) is False, "a küszöb nem lazíthat a definíción"
+    assert cell.passes_filter is False
+    # A lényeg: a pipa és a szűrő SOSEM mondhat ellent egymásnak.
+    assert not (cell.passes_filter and not tr.projects_here)
+
+
+def test_projection_definition_is_global_and_consistent():
+    """Ha a GLOBÁLIS definíciót lazítjuk 'csak végpont'-ra, a pipa is követi."""
+    from core.loader import build_region_descendants
+    from core.analysis import ProjectionDefinition, apply_filter
+
+    atlas, dic = _atlas(), _dictionary()
+    # Axon, ami a TRN-ben végződik, de ott NEM ágazik el (1 végpont, 0 elágazás)
+    cell = _swc([
+        (1, 1, 1, -1),   # soma (cortex)
+        (2, 2, 2, 1),    # axon (cortex)
+        (3, 2, 5, 2),    # axon (TRN) -> 1 gyerek, tehát nem elágazás
+        (4, 2, 5, 3),    # axon (TRN) -> végpont
+    ])
+
+    # (a) Alapértelmezett definíció: végpont ÉS elágazás -> nem vetítés
+    strict = run_analysis(cell, atlas, dic, [TRN])
+    t_strict = strict.target_results[0]
+    assert t_strict.endpoint_count == 1 and t_strict.branch_point_count == 0
+    assert t_strict.projects_here is False
+
+    # (b) Lazított GLOBÁLIS definíció: csak végpont kell -> vetítés,
+    #     és a szűrő is ezt látja (nincs ellentmondás)
+    loose = run_analysis(cell, atlas, dic, [TRN],
+                         projection_definition=ProjectionDefinition(1, 0))
+    t_loose = loose.target_results[0]
+    assert t_loose.projects_here is True
+
+    apply_filter(loose, {TRN: FilterCriteria(min_endpoints=1, operator='AND')})
+    assert loose.passes_filter is True
+    assert ProjectionDefinition(1, 0).slug() == "ep1_br0"
+    assert "endpoint" in ProjectionDefinition(1, 0).describe()
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
@@ -320,4 +377,6 @@ if __name__ == "__main__":
     test_parent_region_matches_descendants()
     test_descending_brainstem_excludes_thalamus()
     test_cortical_summary_denominator()
+    test_filter_never_contradicts_projection_flag()
+    test_projection_definition_is_global_and_consistent()
     print("All analysis regression tests passed.")

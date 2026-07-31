@@ -9,6 +9,7 @@ import pandas as pd
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
     BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME,
+    DEFAULT_PROJECTION_DEFINITION,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
@@ -18,7 +19,7 @@ from core.loader import (
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
-    build_cortical_summary
+    build_cortical_summary, ProjectionDefinition
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
@@ -354,10 +355,54 @@ with st.sidebar:
     st.divider()
 
     # -------------------------------------------------------------------------
+    # 1b. What counts as a projection — GLOBAL definition
+    # -------------------------------------------------------------------------
+    # Ez az egyetlen igazságforrás: ugyanez hajtja a "..._projects" oszlopot, a
+    # szűrést és az összesítő táblákat, így nem lehet ellentmondás közöttük.
+    st.markdown("**Projection Definition**",
+                help="What counts as a projection, everywhere in the app: the projection "
+                     "checkboxes, the filter, and the summary tables all follow this single "
+                     "rule. Lower the branch-point requirement to 0 for an endpoint-only "
+                     "definition.")
+    with st.expander("What counts as a projection?", expanded=False):
+        st.caption(
+            "Default — **≥1 endpoint AND ≥1 branch point** — means a genuine terminal "
+            "arborization. An axon that only crosses a region (branching there but "
+            "terminating elsewhere) is correctly excluded."
+        )
+        def_ep = st.number_input(
+            "Min. endpoints to count as a projection", min_value=0,
+            value=int(DEFAULT_PROJECTION_DEFINITION['min_endpoints']), step=1,
+            key="projdef_ep",
+            help="Axon terminals that must fall inside the region."
+        )
+        def_br = st.number_input(
+            "Min. branch points to count as a projection", min_value=0,
+            value=int(DEFAULT_PROJECTION_DEFINITION['min_branch_points']), step=1,
+            key="projdef_br",
+            help="Set to 0 for an 'endpoint only' definition — looser, but it also counts "
+                 "axons that terminate in the region without branching there."
+        )
+
+    projection_definition = ProjectionDefinition(
+        min_endpoints=int(def_ep), min_branch_points=int(def_br)
+    )
+    st.caption(f"Current definition: **{projection_definition.describe()}**")
+    if def_br == 0 and def_ep <= 1:
+        st.warning(
+            "Endpoint-only definition: axons that end in the region without branching "
+            "are now counted as projections.", icon="⚠️"
+        )
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
     # 2. Filter Criteria & Logic (AND/OR/NOT)
     # -------------------------------------------------------------------------
     st.markdown("**Projection Filter Criteria**",
-                help="Define what counts as a valid projection. If a cell's axon passes through the area but does not meet these minimums, it will be marked as 'Filtered out'.")
+                help="Extra, per-region constraints ON TOP of the projection definition "
+                     "above. These can only narrow the selection further — they never "
+                     "loosen it, so the projection checkbox and the filter always agree.")
 
     criteria_per_region: dict[int, FilterCriteria] = {}
 
@@ -552,6 +597,9 @@ if run_button:
     st.session_state['results'] = []
     st.session_state['errors'] = []
     st.session_state['criteria_per_region'] = criteria_per_region
+    # Elmentjük a futtatáskor érvényes definíciót, hogy a megjelenítés és az
+    # exportok pontosan azt tükrözzék, amivel az eredmények készültek.
+    st.session_state['projection_definition'] = projection_definition
 
     # A célterületek szülő->leszármazott feloldása (pl. Brain stem, Thalamus az
     # összes alárendelt magjukra). Egyszer építjük fel, minden sejtre ezt használjuk.
@@ -565,7 +613,7 @@ if run_button:
         try:
             swc_df = load_swc(filepath)
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
-                                  region_descendants, region_names)
+                                  region_descendants, region_names, projection_definition)
             result = apply_filter(result, criteria_per_region)
             if len(st.session_state['results']) >= 60:
                 result.coords = {}
@@ -585,6 +633,8 @@ if 'results' in st.session_state and st.session_state['results']:
     results = st.session_state['results']
     saved_criteria = st.session_state.get('criteria_per_region', {})
     filter_was_active = any(c.is_active() for c in saved_criteria.values())
+    # A futtatáskor érvényes vetítés-definíció (nem a jelenlegi sidebar állapot).
+    saved_def = st.session_state.get('projection_definition', ProjectionDefinition())
 
     st.divider()
 
@@ -761,7 +811,7 @@ if 'results' in st.session_state and st.session_state['results']:
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Detailed Batch Data")
 
-            summary_df = results_to_dataframe(results, selected_region_ids, dictionary)
+            summary_df = results_to_dataframe(results, selected_region_ids, dictionary, saved_def)
             if filter_was_active:
                 summary_df = summary_df.sort_values('passes_filter', ascending=False)
 
@@ -774,10 +824,13 @@ if 'results' in st.session_state and st.session_state['results']:
         with tab_summary:
             section_header("Cortical Projection Summary")
             st.caption(
-                "Ready-to-send tables, per cortical region. Percentages use the strict "
-                "projection definition (endpoint **and** branch) directly — independent of "
-                "the sidebar filter — so there is no L6 over-removal and no wrong denominator."
+                f"Ready-to-send tables, per cortical region. A cell counts as projecting when "
+                f"it has **{saved_def.describe()}** in the region. Percentages use this "
+                f"definition directly — independent of the per-region filter rules — so there "
+                f"is no Layer-6 over-removal and no wrong denominator."
             )
+            st.info(f"**Projection definition used for these tables:** {saved_def.describe()}  \n"
+                    f"It is recorded in every downloaded file name (`{saved_def.slug()}`).")
 
 
             def _region_label(rid: int) -> str:
@@ -808,25 +861,27 @@ if 'results' in st.session_state and st.session_state['results']:
             if not numerator_ids:
                 st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
             else:
-                summary = build_cortical_summary(results, base_id, numerator_ids, _region_label)
+                summary = build_cortical_summary(results, base_id, numerator_ids,
+                                                 _region_label, saved_def)
+                tag = saved_def.slug()  # pl. 'ep1_br1' - a definíció a fájlnévben
 
                 st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
                 st.dataframe(summary['benne'], use_container_width=True, hide_index=True)
                 st.download_button(
                     "⬇ Download bs_benne.csv", summary['benne'].to_csv(index=False).encode('utf-8'),
-                    file_name="bs_benne.csv", mime="text/csv", key="dl_benne")
+                    file_name=f"bs_benne_{tag}.csv", mime="text/csv", key="dl_benne")
 
                 st.markdown("**2. All L5 = 100% (no brain-stem requirement)** — *bs_nelkul*")
                 st.dataframe(summary['nelkul'], use_container_width=True, hide_index=True)
                 st.download_button(
                     "⬇ Download bs_nelkul.csv", summary['nelkul'].to_csv(index=False).encode('utf-8'),
-                    file_name="bs_nelkul.csv", mime="text/csv", key="dl_nelkul")
+                    file_name=f"bs_nelkul_{tag}.csv", mime="text/csv", key="dl_nelkul")
 
                 st.markdown("**3. Average axon length in each target (µm), among PT cells**")
                 st.dataframe(summary['axon'], use_container_width=True, hide_index=True)
                 st.download_button(
                     "⬇ Download axon_length_summary.csv", summary['axon'].to_csv(index=False).encode('utf-8'),
-                    file_name="axon_length_summary.csv", mime="text/csv", key="dl_axon")
+                    file_name=f"axon_length_summary_{tag}.csv", mime="text/csv", key="dl_axon")
 
                 st.markdown("**4. Category tables with projecting cell IDs**")
                 for lab, df in summary['categories'].items():
@@ -835,7 +890,7 @@ if 'results' in st.session_state and st.session_state['results']:
                         st.dataframe(df, use_container_width=True, hide_index=True)
                         st.download_button(
                             f"⬇ Download {safe}.csv", df.to_csv(index=False).encode('utf-8'),
-                            file_name=f"bs_{safe}.csv", mime="text/csv", key=f"dl_cat_{safe}")
+                            file_name=f"bs_{safe}_{tag}.csv", mime="text/csv", key=f"dl_cat_{safe}")
 
         with tab_inspector:
             st.markdown("Select a single cell from the processed population to view detailed metrics and its 3D scene.")

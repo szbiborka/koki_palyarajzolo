@@ -592,7 +592,7 @@ if run_button:
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
                                   region_descendants, region_names, criteria_per_region)
             result = apply_filter(result, criteria_per_region)
-            if len(st.session_state['results']) >= 60:
+            if len(st.session_state['results']) >= 12000:
                 result.coords = {}
             st.session_state['results'].append((cell_name, result))
         except Exception as e:

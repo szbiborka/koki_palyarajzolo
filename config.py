@@ -8,17 +8,17 @@ import os
 # környezeti változókkal (pl. export ATLAS_PATH=/data/atlas/annotation_25.nrrd)
 BASE_DATA_DIR = os.environ.get(
     'PALYAKOVETO_DATA_DIR',
-    '/home/bibi/Documents/koki/swc_in_ccf/data_v2/'
+    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/data_v2/'
 )
 
 ATLAS_PATH = os.environ.get(
     'ATLAS_PATH',
-    '/home/bibi/Documents/koki/annotation_25.nrrd'
+    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/annotation_25.nrrd'
 )
 
 DICTIONARY_PATH = os.environ.get(
     'DICTIONARY_PATH',
-    '/home/bibi/Documents/koki/query.csv'
+    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/query.csv'
 )
 
 # --- Soma index fájl ---

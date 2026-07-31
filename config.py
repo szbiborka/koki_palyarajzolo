@@ -57,6 +57,20 @@ BRAINSTEM_MOTOR_NAME = "Brain stem descending — Midbrain+Hindbrain (excl. thal
 BRAINSTEM_MOTOR_ACRONYM = "BS-desc"
 BRAINSTEM_MOTOR_COMPONENTS = [313, 1065]  # Midbrain (MB), Hindbrain (HB)
 
+# --- A VETÍTÉS GLOBÁLIS DEFINÍCIÓJA ---
+# Ez az EGYETLEN hely, ahol eldől, mi számít vetítésnek. Ugyanez hajtja a
+# "..._projects" oszlopot, a szűrést (passes_filter) és a Cortical Summary
+# táblákat is - így soha nem fordulhat elő, hogy a pipa és a szűrő ellentmond
+# egymásnak (ez volt a korábbi hiba: a beépített "végpont ÉS elágazás" szabály
+# és az oldalsávban megadott küszöbök két külön definíciót jelentettek).
+#
+# Alapértelmezés: legalább 1 végpont ÉS legalább 1 elágazás = valódi terminális
+# arborizáció. Az elágazás 0-ra állításával lazítható "csak végpont" logikára.
+DEFAULT_PROJECTION_DEFINITION = {
+    'min_endpoints': 1,      # Minimum végpont a régióban, hogy vetítésnek számítson
+    'min_branch_points': 1,  # Minimum elágazás a régióban, hogy vetítésnek számítson
+}
+
 # --- Sejttípus kódok az SWC formátumban ---
 # Ez a szabványos SWC specifikáció szerint van definiálva.
 SWC_TYPE_SOMA = 1

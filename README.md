@@ -22,6 +22,11 @@ Load any SWC file and get a full breakdown per target region: how many endpoints
 ### Batch analysis
 Select any number of cells at once and run the analysis across all of them. Results appear as a sortable table (one row per cell, one column set per region) that you can download as a CSV for further work in Excel or Python.
 
+### One projection definition, everywhere
+A single sidebar control — **Projection Definition** — decides what counts as a projection: the minimum number of endpoints and branch points inside a region (default **≥1 endpoint AND ≥1 branch point**, i.e. a genuine terminal arborization). That one rule drives the `..._projects` columns, the filter (`passes_filter`) and the Cortical Summary alike, so the tick boxes and the selection can never disagree.
+
+Per-region filter criteria (below) are *additional* constraints layered on top: they can only narrow the selection, never loosen it. To loosen — for example to an endpoint-only definition that also counts axons terminating in a region without branching there — change the global definition (set min branch points to 0); the checkboxes, the filter and the summary tables all follow together. The definition in force is written into every exported file name (e.g. `bs_benne_ep1_br1.csv`) and into a `projection_definition` column in the detailed batch export.
+
 ### Flexible projection filters
 For each target region independently, you can set:
 - minimum number of axon endpoints in the region

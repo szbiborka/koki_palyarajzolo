@@ -31,7 +31,9 @@ Each target region has **one** set of numbers that defines what counts as a proj
 
 All conditions must be met simultaneously. The default (**≥1 endpoint AND ≥1 branch point**) means a genuine terminal arborization, so an axon that merely passes through — or that branches there only to send a collateral onward — is not counted. Raise the numbers to be stricter, or set branch points to 0 for an endpoint-only rule.
 
-Crucially these same numbers drive the `..._projects` check marks, the filter (`passes_filter`) **and** the Cortical Summary, so they can never disagree with each other. The condition rule (Required / Excluded / Optional) is separate: it says how regions combine, not what counts as a projection. The criteria in force are written into every exported summary file name (e.g. `bs_benne_ep1_br1.csv`) and into a per-region `..._criterion` column in the detailed batch export.
+Crucially these same numbers drive the `..._projects` check marks, the filter (`passes_filter`) **and** the Cortical Summary, so they can never disagree with each other. The condition rule is separate: it says how regions combine, not what counts as a projection. Four rules are available — **Required (AND)**, **Excluded (NOT)**, **Optional (OR)** and **Observe only**. Use *Observe only* to add a region purely to read its numbers: it is reported and exported, but never removes a cell from the results.
+
+Note that the **Cortical Summary tables deliberately ignore the condition rules** — they are built from which regions each cell projects to, plus the population base you select. An *Excluded (NOT)* rule therefore does not remove cells from those tables (use the brain-stem base to select pyramidal-tract cells instead); the Population Statistics tab does apply the rules. The criteria in force are written into every exported summary file name (e.g. `bs_benne_ep1_br1.csv`) and into a per-region `..._criterion` column in the detailed batch export.
 
 In batch mode, cells that do not meet the criteria are clearly flagged in the results table with a separate color.
 

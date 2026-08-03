@@ -5,6 +5,7 @@
 import os
 import streamlit as st
 import pandas as pd
+import concurrent.futures
 
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
@@ -578,33 +579,58 @@ if run_button:
     st.session_state['results'] = []
     st.session_state['errors'] = []
     st.session_state['criteria_per_region'] = criteria_per_region
-    # Elmentjük a futtatáskor érvényes definíciót, hogy a megjelenítés és az
-    # exportok pontosan azt tükrözzék, amivel az eredmények készültek.
-    st.session_state['criteria_used'] = criteria_per_region
 
-    # A célterületek szülő->leszármazott feloldása (pl. Brain stem, Thalamus az
-    # összes alárendelt magjukra). Egyszer építjük fel, minden sejtre ezt használjuk.
     region_descendants = build_region_descendants(dictionary, selected_region_ids)
     # A 3D nézetnek is szüksége van rá (szülő régiók felszíne, színezés, szűrés),
     # ezért elmentjük - a megjelenítés újrafuttatás nélkül is fut.
     st.session_state['region_descendants'] = region_descendants
+    # A futtatáskor érvényes kritériumok az exportokhoz/összesítőkhöz.
+    st.session_state['criteria_used'] = criteria_per_region
     # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
     region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
     progress = st.progress(0, text="Analyzing cells...")
-    for i, filepath in enumerate(selected_swc_paths):
+
+
+    # Létrehozunk egy segédfüggvényt a szálak számára (ez nem módosítja a logikát, csak csomagol)
+    def process_single_cell(filepath):
         cell_name = next((k for k, v in filtered_swc.items() if v == filepath), os.path.basename(filepath))
         try:
             swc_df = load_swc(filepath)
+            # FONTOS: a criteria_per_region-t át KELL adni, különben a projects_here
+            # az alapértelmezett kritériummal készül, és az oldalsávban beállított
+            # küszöbök semmit nem csinálnának (sem a pipára, sem a szűrésre).
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
                                   region_descendants, region_names, criteria_per_region)
             result = apply_filter(result, criteria_per_region)
-            if len(st.session_state['results']) >= 60:
-                result.coords = {}
-            st.session_state['results'].append((cell_name, result))
+            return (cell_name, result, None)
         except Exception as e:
-            st.session_state['errors'].append((cell_name, str(e)))
-        progress.progress((i + 1) / len(selected_swc_paths), text=f"Analyzed: {cell_name}")
+            return (cell_name, None, str(e))
+
+
+    # Párhuzamos végrehajtás elindítása
+    # A max_workers a szálak számát jelenti. Az i7-es processzorodhoz a 16 vagy 20 ideális.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        # Elindítjuk a feladatokat az összes kiválasztott SWC fájlra
+        futures = {executor.submit(process_single_cell, path): path for path in selected_swc_paths}
+
+        completed_count = 0
+        total_count = len(selected_swc_paths)
+
+        # Ahogy a szálak végeznek a sejtekkel, begyűjtjük az eredményeket
+        for future in concurrent.futures.as_completed(futures):
+            cell_name, result, error = future.result()
+
+            if error is None:
+                st.session_state['results'].append((cell_name, result))
+            else:
+                st.session_state['errors'].append((cell_name, error))
+
+            # Progress bar frissítése
+            completed_count += 1
+            progress.progress(completed_count / total_count if total_count > 0 else 0,
+                              text=f"Analyzed {completed_count}/{total_count}: {cell_name}")
+
     progress.empty()
 
 # --- Display Results ---
@@ -939,21 +965,33 @@ if 'results' in st.session_state and st.session_state['results']:
         with tab_3d_multi:
             st.caption("Joint rendering of all processed cells. Each cell gets its own colour for easy distinction.")
 
-            # Only cells whose coordinate data was retained can be rendered.
-            # Coords are cleared for cells beyond position 60 to protect memory.
-            combined_results = [(n, r) for n, r in results if r.coords]
-            dropped = len(results) - len(combined_results)
+            # --- ÚJ: Kapcsoló a csak validált sejtekhez ---
+            show_only_valid = st.toggle(
+                "Show only passing cells",
+                value=True,
+                help="Only display cells that passed the active filters (or have at least one projection if no filter is set)."
+            )
 
-            if dropped > 0:
-                st.warning(
-                    f"{dropped} cell{'s' if dropped > 1 else ''} beyond the 60-cell 3D limit "
-                    f"cannot be rendered. Their numerical results are still available in the "
-                    f"Population Statistics tab."
-                )
+            # Sejtek válogatása a kapcsoló állapota alapján
+            combined_results = []
+            for n, r in results:
+                if not r.coords:
+                    continue
+
+                if show_only_valid:
+                    # Ha volt aktív szűrő, akkor a passes_filter-t nézzük
+                    if filter_was_active and not r.passes_filter:
+                        continue
+                    # Ha nem volt aktív szűrő, akkor azt nézzük, hogy vetít-e egyáltalán valahova
+                    if not filter_was_active and not any(tr.projects_here for tr in r.target_results):
+                        continue
+
+                combined_results.append((n, r))
+            # ----------------------------------------------
 
             if not combined_results:
-                st.caption("No cells with 3D data available.")
-            elif st.button("Generate Combined Scene", type="primary"):
+                st.warning("No cells match the current criteria for 3D rendering.")
+            elif st.button(f"Generate Combined Scene ({len(combined_results)} cells)", type="primary"):
                 with st.spinner(f"Rendering {len(combined_results)} cells together..."):
                     fig_multi = build_3d_plot_multi(
                         combined_results, atlas_matrix, selected_region_ids,

@@ -70,7 +70,13 @@ class FilterCriteria:
     # végpontjához képest [0..1]. NOT operátorral párosítva ez a L6-szűrő:
     # pl. "thalamus végpont-arány >= 2.5%" => NOT => a L6 sejtek kizárása.
     min_endpoint_fraction: float = 0.0
-    operator: str = 'AND'  # 'AND', 'OR', 'NOT'
+    # 'AND'  = ide vetítenie kell
+    # 'NOT'  = ide nem vetíthet
+    # 'OR'   = opcionális (legalább egy OR-régió teljesüljön)
+    # 'NONE' = CSAK MEGFIGYELÉS: a régió számai megjelennek, de a szűrést nem
+    #          befolyásolja. Enélkül egy pusztán "megnézni" hozzáadott régió
+    #          némán kötelező feltétellé vált volna.
+    operator: str = 'AND'
 
     def is_projection(self, endpoint_count: int, branch_point_count: int,
                       axon_length_um: float = 0.0, endpoint_fraction: float = 0.0) -> bool:
@@ -82,12 +88,15 @@ class FilterCriteria:
 
     def is_active(self) -> bool:
         """
-        Minden EXPLICIT szabály részt vesz a szűrésben: az AND azt jelenti,
-        "ide vetítenie kell", a NOT azt, "ide nem vetíthet", az OR az opcionális
-        uniót. (Korábban a küszöb nélküli AND némán kimaradt, ami miatt egy
-        kizáró szűrőtől NŐHETETT egy régió sejtszáma.)
+        Részt vesz-e ez a régió a SZŰRÉSBEN.
+
+        Minden explicit szabály (AND / NOT / OR) aktív - korábban a küszöb
+        nélküli AND némán kimaradt, ami miatt egy kizáró szűrőtől NŐHETETT egy
+        régió sejtszáma. A 'NONE' viszont szándékosan inaktív: így hozzá lehet
+        adni egy régiót pusztán megfigyelésre (látszanak a számai, exportba is
+        bekerül), anélkül hogy némán kötelező feltétellé válna.
         """
-        return True
+        return self.operator != 'NONE'
 
     def meets_thresholds(self, region_result: 'RegionResult') -> bool:
         """
@@ -128,6 +137,20 @@ class CellAnalysisResult:
     total_axon_length_um: float
     passes_filter: bool | None = None
     coords: dict = field(default_factory=dict)
+    # A soma körüli 3x3x3 voxel hányad része esik MÁS régióba [0..1]. A 25 um-es
+    # voxelrács miatt a határ közeli somák besorolása bizonytalan - ez a mérőszám
+    # teszi láthatóvá, mely sejteket érdemes szemre ellenőrizni.
+    soma_border_fraction: float = 0.0
+    # A sejt axon-végpontjai közül hány esik ANNOTÁLT régióba (region_id > 0).
+    # A végpont-arány (endpoint_fraction) nevezője az ÖSSZES végpont, beleértve
+    # az atlaszon kívülre esőket is - ez a két szám teszi átláthatóvá a különbséget.
+    total_endpoint_count: int = 0
+    annotated_endpoint_count: int = 0
+
+    @property
+    def soma_is_border(self) -> bool:
+        """A soma régióhatáron van-e (a besorolás bizonytalan)."""
+        return self.soma_border_fraction > 0.0
 
 
 # FŐ ANALÍZIS FÜGGVÉNY
@@ -195,13 +218,77 @@ def run_analysis(
     axon_mask_curr = is_axon[curr_idx]
     total_axon_length = float(np.sum(distances[axon_mask_curr]))
 
+    # -------------------------------------------------------------------------
+    # AXONHOSSZ RÉGIÓNKÉNT - a régióhatárokon FELDARABOLVA
+    # -------------------------------------------------------------------------
+    # Régen egy teljes szakasz hossza a GYERMEK csomópont régiójához került, még
+    # akkor is, ha a szakasz átlépett egy határt. Egy 125 um-es kéreg->GPe ugrás
+    # így teljes egészében a GPe-nek számított, ami felfelé torzította a
+    # célterületek hosszát.
+    #
+    # Most a szakaszokat félvoxelnyi (12.5 um) lépésekre mintavételezzük, és
+    # minden mintadarab hosszát abba a régióba könyveljük, amelyikbe a
+    # középpontja esik. A rövid szakaszok (a legtöbb SWC szakasz néhány um) 1
+    # mintát kapnak, tehát a többletköltség elhanyagolható; a hosszú, határt
+    # átlépő szakaszok viszont arányosan oszlanak meg a régiók között.
+    axon_seg = np.where(axon_mask_curr)[0]
+    if len(axon_seg) > 0:
+        seg_child = curr_idx[axon_seg]
+        seg_parent = p_idx[axon_seg]
+        seg_len = distances[axon_seg]
+
+        # Hány mintára bontsuk az egyes szakaszokat (min. 1, felső korláttal)
+        n_samp = np.maximum(1, np.ceil(seg_len / (VOXEL_SIZE * 0.5)).astype(int))
+        n_samp = np.minimum(n_samp, 256)
+
+        seg_id = np.repeat(np.arange(len(seg_len)), n_samp)
+        starts = np.concatenate(([0], np.cumsum(n_samp)[:-1]))
+        k = np.arange(int(n_samp.sum())) - starts[seg_id]
+        # A mintadarab KÖZÉPPONTJA a szakasz mentén: (k + 0.5) / n
+        t = (k + 0.5) / n_samp[seg_id]
+
+        px, py, pz = x[seg_parent], y[seg_parent], z[seg_parent]
+        dx, dy, dz = x[seg_child] - px, y[seg_child] - py, z[seg_child] - pz
+        s_x = px[seg_id] + t * dx[seg_id]
+        s_y = py[seg_id] + t * dy[seg_id]
+        s_z = pz[seg_id] + t * dz[seg_id]
+
+        s_vx = np.clip(np.round(s_x / VOXEL_SIZE).astype(int), 0, max_x - 1)
+        s_vy = np.clip(np.round(s_y / VOXEL_SIZE).astype(int), 0, max_y - 1)
+        s_vz = np.clip(np.round(s_z / VOXEL_SIZE).astype(int), 0, max_z - 1)
+        samp_region = atlas_matrix[s_vx, s_vy, s_vz].astype(int)
+        samp_len = seg_len[seg_id] / n_samp[seg_id]
+
+        # Régiónkénti hossz-összeg (a negatív/hibás ID-kat kiszűrjük)
+        ok = samp_region >= 0
+        length_by_region = np.bincount(samp_region[ok], weights=samp_len[ok])
+    else:
+        length_by_region = np.zeros(1, dtype=float)
+
+    def _axon_length_in(match_ids: np.ndarray) -> float:
+        """A megadott atlasz-ID-khez tartozó, határokon felosztott axonhossz."""
+        valid = match_ids[(match_ids >= 0) & (match_ids < len(length_by_region))]
+        return float(length_by_region[valid].sum()) if len(valid) else 0.0
+
     soma_idx_arr = np.where(type_arr == SWC_TYPE_SOMA)[0]
+    soma_border_fraction = 0.0
     if len(soma_idx_arr) > 0:
         soma_idx = soma_idx_arr[0]
         soma_region_id = int(point_regions[soma_idx])
         soma_name_matches = dictionary.loc[dictionary['id'] == soma_region_id, 'safe_name'].tolist()
         soma_name = soma_name_matches[0] if soma_name_matches else "Unknown region"
         soma_coords = (float(x[soma_idx]), float(y[soma_idx]), float(z[soma_idx]))
+
+        # HATÁRSEJT-JELZŐ: a régióbesorolás 25 um-es voxelrácson történik, ezért a
+        # határ közelében lévő somák besorolása bizonytalan (Nóra "S1 határon lévő
+        # sejtek" megfigyelése). Megnézzük a soma körüli 3x3x3 voxelt: ha nem
+        # mindegyik ugyanabba a régióba esik, a sejt határon van.
+        sx0, sy0, sz0 = int(vox_x[soma_idx]), int(vox_y[soma_idx]), int(vox_z[soma_idx])
+        nb = atlas_matrix[max(0, sx0 - 1):sx0 + 2,
+                          max(0, sy0 - 1):sy0 + 2,
+                          max(0, sz0 - 1):sz0 + 2].ravel()
+        if len(nb) > 0:
+            soma_border_fraction = float(np.mean(nb != soma_region_id))
     else:
         soma_idx = None
         soma_region_id = -1
@@ -241,8 +328,8 @@ def run_analysis(
         br_count = int(np.isin(branch_regions, match).sum())
         proj_count = ep_count + br_count
 
-        region_axon_mask = axon_mask_curr & np.isin(point_regions[curr_idx], match)
-        axon_len = float(np.sum(distances[region_axon_mask]))
+        # Határokon felosztott hossz (lásd length_by_region fent).
+        axon_len = _axon_length_in(match)
 
         fraction = (ep_count / total_endpoint_count) if total_endpoint_count > 0 else 0.0
 
@@ -292,7 +379,10 @@ def run_analysis(
         soma_region_id=soma_region_id, soma_region_name=soma_name,
         soma_coords=soma_coords, target_results=target_results,
         other_projection_regions=other_projection_regions,
-        total_axon_length_um=total_axon_length, coords=coords
+        total_axon_length_um=total_axon_length, coords=coords,
+        soma_border_fraction=soma_border_fraction,
+        total_endpoint_count=total_endpoint_count,
+        annotated_endpoint_count=int(np.sum(ep_regions > 0)),
     )
 
 
@@ -365,9 +455,18 @@ def results_to_dataframe(
             'soma_region': result.soma_region_name,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
+            # Határsejt-jelző: a 25 um-es voxelrács miatt bizonytalan besorolás.
+            'soma_on_region_border': result.soma_is_border,
+            'soma_border_fraction': round(result.soma_border_fraction, 2),
+            # A végpont-arány nevezőjének átláthatósága: hány végpont esik
+            # egyáltalán annotált agyterületre.
+            'endpoints_total': result.total_endpoint_count,
+            'endpoints_in_annotated_regions': result.annotated_endpoint_count,
         }
         for tr in result.target_results:
-            safe_col = tr.region_name.replace(' ', '_').lower()[:30]
+            # A régió ID-t is beletesszük, mert a 30 karakteres csonkolás miatt két
+            # hasonló nevű régió oszlopai egymásra íródhattak volna (néma adatvesztés).
+            safe_col = f"{tr.region_name.replace(' ', '_').lower()[:30]}_{tr.region_id}"
             row[f'{safe_col}_projects'] = tr.projects_here
             row[f'{safe_col}_endpoints'] = tr.endpoint_count
             row[f'{safe_col}_branches'] = tr.branch_point_count
@@ -439,8 +538,15 @@ def build_cortical_summary(
 
     criteria_per_region = criteria_per_region or {}
 
+    # A soma nélküli (vagy nem azonosított régiójú) sejteket KIHAGYJUK: nincs
+    # kérgi régiójuk, amihez hozzá lehetne rendelni őket, ezért korábban saját
+    # "No soma found" sort kaptak az összesítőkben, ami félrevezető volt.
     groups: dict[str, list] = defaultdict(list)
+    skipped_no_soma = 0
     for name, r in results:
+        if r.soma_region_id is None or r.soma_region_id <= 0:
+            skipped_no_soma += 1
+            continue
         groups[r.soma_region_name].append((name, r))
 
     num_labels = [region_label_fn(rid) for rid in numerator_region_ids]
@@ -536,4 +642,5 @@ def build_cortical_summary(
         slug = "mixed"
 
     return {"benne": benne, "nelkul": nelkul, "axon": axon,
-            "categories": categories, "criteria_note": criteria_note, "slug": slug}
+            "categories": categories, "criteria_note": criteria_note, "slug": slug,
+            "skipped_no_soma": skipped_no_soma}

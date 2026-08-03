@@ -313,6 +313,7 @@ RULE_OPERATORS = {
     "Required (AND)": "AND",
     "Excluded (NOT)": "NOT",
     "Optional (OR)": "OR",
+    "Observe only": "NONE",
 }
 
 
@@ -390,15 +391,18 @@ with st.sidebar:
                     options=list(RULE_OPERATORS.keys()),
                     horizontal=True,
                     help=(
-                        "Required: the cell must project here for the thresholds below to be "
-                        "evaluated. Excluded: the cell is disqualified if it projects here at "
-                        "all. Optional: satisfying this region counts toward an OR-combination "
-                        "with other Optional regions, but is not mandatory on its own."
+                        "Required: the cell must project here. Excluded: the cell is "
+                        "disqualified if it projects here. Optional: counts toward an "
+                        "OR-combination with other Optional regions. Observe only: the "
+                        "region's numbers are reported but it does NOT filter anything — "
+                        "use this to add a region purely to look at it."
                     ),
                     key=f"filter_rule_{region_id}",
                     label_visibility="collapsed",
                 )
                 op = RULE_OPERATORS[rule_label]
+                if op == 'NONE':
+                    st.caption("👁 Observe only — reported, but does not filter any cells.")
 
                 min_ep = st.number_input(
                     "Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
@@ -430,6 +434,16 @@ with st.sidebar:
                     ),
                     key=f"filter_eppct_{region_id}"
                 )
+                # A végpont-arány minden más feltétellel ÉS kapcsolatban van, ezért
+                # egy L6-szűrőnél (NOT + arány) az elágazás-küszöb is beleszólna.
+                # Ha tisztán az arány alapján akarunk kizárni, az elágazás legyen 0.
+                if min_ep_pct > 0 and op == 'NOT' and int(min_br) > 0:
+                    st.info(
+                        f"Tip: this excludes cells that arborise here **and** exceed "
+                        f"{min_ep_pct:g}%. To exclude on the endpoint share alone "
+                        f"(the usual Layer-6 filter), set *Min. branch points* to 0.",
+                        icon="💡"
+                    )
 
                 criteria_per_region[region_id] = FilterCriteria(
                     min_endpoints=int(min_ep),
@@ -577,6 +591,12 @@ if run_button:
     st.session_state['criteria_per_region'] = criteria_per_region
 
     region_descendants = build_region_descendants(dictionary, selected_region_ids)
+    # A 3D nézetnek is szüksége van rá (szülő régiók felszíne, színezés, szűrés),
+    # ezért elmentjük - a megjelenítés újrafuttatás nélkül is fut.
+    st.session_state['region_descendants'] = region_descendants
+    # A futtatáskor érvényes kritériumok az exportokhoz/összesítőkhöz.
+    st.session_state['criteria_used'] = criteria_per_region
+    # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
     region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
     progress = st.progress(0, text="Analyzing cells...")
@@ -587,8 +607,11 @@ if run_button:
         cell_name = next((k for k, v in filtered_swc.items() if v == filepath), os.path.basename(filepath))
         try:
             swc_df = load_swc(filepath)
+            # FONTOS: a criteria_per_region-t át KELL adni, különben a projects_here
+            # az alapértelmezett kritériummal készül, és az oldalsávban beállított
+            # küszöbök semmit nem csinálnának (sem a pipára, sem a szűrésre).
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
-                                  region_descendants, region_names)
+                                  region_descendants, region_names, criteria_per_region)
             result = apply_filter(result, criteria_per_region)
             return (cell_name, result, None)
         except Exception as e:
@@ -618,6 +641,12 @@ if run_button:
             progress.progress(completed_count / total_count if total_count > 0 else 0,
                               text=f"Analyzed {completed_count}/{total_count}: {cell_name}")
 
+    # A szálak befejezési sorrendje futásonként más, ezért a lista sorrendje is
+    # ingadozna (pl. a Single Cell Inspector legördülője). Névre rendezve a
+    # futások reprodukálhatók.
+    st.session_state['results'].sort(key=lambda r: r[0])
+    st.session_state['errors'].sort(key=lambda r: r[0])
+
     progress.empty()
 
 # --- Display Results ---
@@ -632,6 +661,8 @@ if 'results' in st.session_state and st.session_state['results']:
     filter_was_active = any(c.is_active() for c in saved_criteria.values())
     # A futtatáskor érvényes vetítés-definíció (nem a jelenlegi sidebar állapot).
     criteria_used = st.session_state.get('criteria_used', saved_criteria)
+    # A szülő->leszármazott feloldás a 3D nézethez (Brain stem, Thalamus stb.).
+    descendants_used = st.session_state.get('region_descendants', {})
 
     st.divider()
 
@@ -719,7 +750,8 @@ if 'results' in st.session_state and st.session_state['results']:
                     result, atlas_matrix, cell_name,
                     show_soma_region=show_soma_region,
                     show_other_regions=show_other_regions,
-                    show_only_target_regions=show_only_target_regions  # Bepasszoljuk a UI kapcsolót
+                    show_only_target_regions=show_only_target_regions,  # Bepasszoljuk a UI kapcsolót
+                    region_descendants=descendants_used
                 )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -825,6 +857,15 @@ if 'results' in st.session_state and st.session_state['results']:
                 "projection criteria shown in the sidebar — and each percentage is taken "
                 "against the population base you choose below, so there is no wrong denominator."
             )
+            st.warning(
+                "**These tables deliberately ignore the Required / Excluded / Optional rules.** "
+                "They are built only from *which regions each cell projects to* plus the "
+                "population base chosen below. So an *Excluded (NOT)* rule — e.g. a Layer-6 "
+                "thalamus filter — does **not** remove cells from these tables. Use the "
+                "brain-stem base to select pyramidal-tract cells instead. "
+                "(The Population Statistics tab does apply the rules.)",
+                icon="ℹ️"
+            )
 
 
             def _region_label(rid: int) -> str:
@@ -860,6 +901,11 @@ if 'results' in st.session_state and st.session_state['results']:
                 tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
                 st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
                         f"Recorded in every downloaded file name (`{tag}`).")
+                if summary.get('skipped_no_soma'):
+                    st.caption(
+                        f"{summary['skipped_no_soma']} cell(s) without an identified soma "
+                        f"region were excluded from these tables."
+                    )
 
                 st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
                 st.dataframe(summary['benne'], use_container_width=True, hide_index=True)
@@ -932,7 +978,8 @@ if 'results' in st.session_state and st.session_state['results']:
                             inspect_result, atlas_matrix, inspect_name,
                             show_soma_region=show_soma_region,
                             show_other_regions=show_other_regions,
-                            show_only_target_regions=show_only_target_regions
+                            show_only_target_regions=show_only_target_regions,
+                            region_descendants=descendants_used
                         )
                     st.plotly_chart(fig_inspect, use_container_width=True)
 
@@ -970,6 +1017,7 @@ if 'results' in st.session_state and st.session_state['results']:
                     fig_multi = build_3d_plot_multi(
                         combined_results, atlas_matrix, selected_region_ids,
                         show_target_regions=True,
-                        show_only_target_regions=show_only_target_regions
+                        show_only_target_regions=show_only_target_regions,
+                        region_descendants=descendants_used
                     )
                 st.plotly_chart(fig_multi, use_container_width=True)

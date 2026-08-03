@@ -10,6 +10,7 @@ import concurrent.futures
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
     BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME,
+    VIZ_THEMES, DEFAULT_VIZ_THEME,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
@@ -550,6 +551,26 @@ with st.sidebar:
     # -------------------------------------------------------------------------
     st.markdown("**Visualization Settings**",
                 help="These toggles only affect the appearance of the 3D Plotly scene, not the numerical analysis.")
+
+    # A vékony axonvonalak sötét háttéren sokkal jobban láthatók, ezért ez az
+    # alapértelmezés. Mindkét paletta ellenőrzött (világosság, króma, színtévesztő
+    # elkülönülés, kontraszt) - lásd config.VIZ_THEMES.
+    theme_labels = {v['label']: k for k, v in VIZ_THEMES.items()}
+    theme_choice = st.selectbox(
+        "Scene theme", options=list(theme_labels.keys()),
+        index=list(theme_labels.values()).index(DEFAULT_VIZ_THEME),
+        help="Dark makes thin axons far easier to see. Both palettes are "
+             "colour-blind checked and keep at least 3:1 contrast with the background.",
+        key="viz_theme"
+    )
+    viz_theme = theme_labels[theme_choice]
+
+    show_brain_outline = st.toggle(
+        "Show brain outline", value=True,
+        help="Draws the whole brain surface very faintly, so you can tell where "
+             "in the brain the cell sits instead of it floating in space.",
+        key="toggle_brain_outline"
+    )
     show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
     show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
 
@@ -751,7 +772,8 @@ if 'results' in st.session_state and st.session_state['results']:
                     show_soma_region=show_soma_region,
                     show_other_regions=show_other_regions,
                     show_only_target_regions=show_only_target_regions,  # Bepasszoljuk a UI kapcsolót
-                    region_descendants=descendants_used
+                    region_descendants=descendants_used,
+                    theme=viz_theme, show_brain_outline=show_brain_outline
                 )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -979,7 +1001,8 @@ if 'results' in st.session_state and st.session_state['results']:
                             show_soma_region=show_soma_region,
                             show_other_regions=show_other_regions,
                             show_only_target_regions=show_only_target_regions,
-                            region_descendants=descendants_used
+                            region_descendants=descendants_used,
+                            theme=viz_theme, show_brain_outline=show_brain_outline
                         )
                     st.plotly_chart(fig_inspect, use_container_width=True)
 
@@ -1018,6 +1041,7 @@ if 'results' in st.session_state and st.session_state['results']:
                         combined_results, atlas_matrix, selected_region_ids,
                         show_target_regions=True,
                         show_only_target_regions=show_only_target_regions,
-                        region_descendants=descendants_used
+                        region_descendants=descendants_used,
+                        theme=viz_theme, show_brain_outline=show_brain_outline
                     )
                 st.plotly_chart(fig_multi, use_container_width=True)

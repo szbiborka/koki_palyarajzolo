@@ -434,6 +434,16 @@ with st.sidebar:
                     ),
                     key=f"filter_eppct_{region_id}"
                 )
+                # A végpont-arány minden más feltétellel ÉS kapcsolatban van, ezért
+                # egy L6-szűrőnél (NOT + arány) az elágazás-küszöb is beleszólna.
+                # Ha tisztán az arány alapján akarunk kizárni, az elágazás legyen 0.
+                if min_ep_pct > 0 and op == 'NOT' and int(min_br) > 0:
+                    st.info(
+                        f"Tip: this excludes cells that arborise here **and** exceed "
+                        f"{min_ep_pct:g}%. To exclude on the endpoint share alone "
+                        f"(the usual Layer-6 filter), set *Min. branch points* to 0.",
+                        icon="💡"
+                    )
 
                 criteria_per_region[region_id] = FilterCriteria(
                     min_endpoints=int(min_ep),
@@ -630,6 +640,12 @@ if run_button:
             completed_count += 1
             progress.progress(completed_count / total_count if total_count > 0 else 0,
                               text=f"Analyzed {completed_count}/{total_count}: {cell_name}")
+
+    # A szálak befejezési sorrendje futásonként más, ezért a lista sorrendje is
+    # ingadozna (pl. a Single Cell Inspector legördülője). Névre rendezve a
+    # futások reprodukálhatók.
+    st.session_state['results'].sort(key=lambda r: r[0])
+    st.session_state['errors'].sort(key=lambda r: r[0])
 
     progress.empty()
 
@@ -885,6 +901,11 @@ if 'results' in st.session_state and st.session_state['results']:
                 tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
                 st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
                         f"Recorded in every downloaded file name (`{tag}`).")
+                if summary.get('skipped_no_soma'):
+                    st.caption(
+                        f"{summary['skipped_no_soma']} cell(s) without an identified soma "
+                        f"region were excluded from these tables."
+                    )
 
                 st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
                 st.dataframe(summary['benne'], use_container_width=True, hide_index=True)

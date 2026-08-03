@@ -66,18 +66,46 @@ def _build_axon_trace(
     return traces
 
 
+def _region_mask(atlas_matrix: np.ndarray, region_id: int,
+                 region_descendants: dict[int, set[int]] | None) -> np.ndarray:
+    """
+    Egy régió voxel-maszkja, a SZÜLŐ régiókat is beleértve.
+
+    Az annotációs térfogat csak a levél-régiókat címkézi, ezért egy szülő (pl.
+    "Brain stem") vagy a virtuális "leszálló agytörzs" ID-ja önmagában 0 voxelt
+    fedne - nem rajzolódna ki felület. A leszármazottakra feloldva viszont igen.
+    """
+    ids = (region_descendants or {}).get(int(region_id))
+    if ids:
+        return np.isin(atlas_matrix, np.fromiter((int(v) for v in ids), dtype=int))
+    return atlas_matrix == region_id
+
+
+def _expand_ids(region_id: int, region_descendants: dict[int, set[int]] | None) -> set[int]:
+    """A régióhoz tartozó összes atlasz-ID (önmaga + leszármazottai)."""
+    ids = (region_descendants or {}).get(int(region_id))
+    return set(int(v) for v in ids) if ids else {int(region_id)}
+
+
 def build_3d_plot(
         result: CellAnalysisResult, atlas_matrix: np.ndarray, cell_name: str = "",
         show_soma_region: bool = True, show_other_regions: bool = True,
-        show_only_target_regions: bool = False  # ÚJ KAPCSOLÓ
+        show_only_target_regions: bool = False,  # ÚJ KAPCSOLÓ
+        region_descendants: dict[int, set[int]] | None = None
 ) -> go.Figure:
     coords = result.coords
     x, y, z, is_axon, point_regions = coords['x'], coords['y'], coords['z'], coords['is_axon'], coords['point_regions']
     proj_idx, curr_idx, parent_row_indices, soma_idx = coords['proj_idx'], coords['curr_idx'], coords[
         'parent_row_indices'], coords['soma_idx']
 
-    region_color_map: dict[int, str] = {tr.region_id: _get_region_color(i) for i, tr in
-                                        enumerate(result.target_results)}
+    # A színtérkép a TÉNYLEGES atlasz-ID-kra épül: egy szülő régió minden
+    # leszármazott magja ugyanazt a színt kapja, különben az ottani axonok
+    # szürkék maradnának (a csomópontok levél-ID-t hordoznak, nem a szülőét).
+    region_color_map: dict[int, str] = {}
+    for i, tr in enumerate(result.target_results):
+        color = _get_region_color(i)
+        for rid in _expand_ids(tr.region_id, region_descendants):
+            region_color_map[rid] = color
     traces: list = []
 
     if show_soma_region and result.soma_region_id > 0:
@@ -85,9 +113,10 @@ def build_3d_plot(
                                   f'Soma: {result.soma_region_name}'):
             traces.append(t)
 
-    for tr in result.target_results:
+    for i, tr in enumerate(result.target_results):
         proj_symbol = '✓' if tr.projects_here else '✗'
-        if t := _build_mesh_trace(atlas_matrix == tr.region_id, region_color_map[tr.region_id], VIZ_REGION_OPACITY,
+        if t := _build_mesh_trace(_region_mask(atlas_matrix, tr.region_id, region_descendants),
+                                  _get_region_color(i), VIZ_REGION_OPACITY,
                                   f'{proj_symbol} {tr.region_name}'):
             traces.append(t)
 
@@ -102,7 +131,11 @@ def build_3d_plot(
     # --- EXCLUSIVE NÉZET ÁTADÁSA ---
     allowed_regions = None
     if show_only_target_regions:
-        allowed_regions = set(tr.region_id for tr in result.target_results)
+        # Szülő régióknál a leszármazottakat is engedni kell, különben az ott
+        # futó axonok teljesen eltűnnének az "Axon-in-region" nézetből.
+        allowed_regions = set()
+        for tr in result.target_results:
+            allowed_regions |= _expand_ids(tr.region_id, region_descendants)
         allowed_regions.add(result.soma_region_id)
 
     traces.extend(_build_axon_trace(x, y, z, curr_idx, parent_row_indices, is_axon, point_regions, region_color_map, 2,
@@ -115,11 +148,12 @@ def build_3d_plot(
             hovertext=f'Soma<br>{result.soma_region_name}', hoverinfo='text',
         ))
 
-    for tr in result.target_results:
-        if len(pts := proj_idx[point_regions[proj_idx] == tr.region_id]) > 0:
+    for i, tr in enumerate(result.target_results):
+        match = np.fromiter(_expand_ids(tr.region_id, region_descendants), dtype=int)
+        if len(pts := proj_idx[np.isin(point_regions[proj_idx], match)]) > 0:
             traces.append(go.Scatter3d(
                 x=x[pts], y=y[pts], z=z[pts], mode='markers',
-                marker=dict(size=5, color=region_color_map[tr.region_id], symbol='diamond',
+                marker=dict(size=5, color=_get_region_color(i), symbol='diamond',
                             line=dict(color='white', width=0.5)),
                 name=f'Proj. pts: {tr.region_name}', hovertext=[f'{tr.region_name}<br>ep/branch' for _ in pts],
                 hoverinfo='text',
@@ -144,14 +178,16 @@ def build_3d_plot(
 def build_3d_plot_multi(
         results: list[tuple[str, CellAnalysisResult]], atlas_matrix: np.ndarray,
         target_region_ids: list[int], show_target_regions: bool = True,
-        show_only_target_regions: bool = False  # ÚJ KAPCSOLÓ
+        show_only_target_regions: bool = False,  # ÚJ KAPCSOLÓ
+        region_descendants: dict[int, set[int]] | None = None
 ) -> go.Figure:
     palette, traces = COLORS['region_palette'], []
     region_names = {tr.region_id: tr.region_name for tr in results[0][1].target_results} if results else {}
 
     if show_target_regions:
         for i, region_id in enumerate(target_region_ids):
-            if t := _build_mesh_trace(atlas_matrix == region_id, _get_region_color(i), VIZ_REGION_OPACITY * 0.55,
+            if t := _build_mesh_trace(_region_mask(atlas_matrix, region_id, region_descendants),
+                                      _get_region_color(i), VIZ_REGION_OPACITY * 0.55,
                                       region_names.get(region_id, f'Region {region_id}')):
                 traces.append(t)
 
@@ -163,7 +199,10 @@ def build_3d_plot_multi(
         # --- EXCLUSIVE NÉZET ÁTADÁSA ---
         allowed_regions = None
         if show_only_target_regions:
-            allowed_regions = set(target_region_ids)
+            # Szülő régiók leszármazottait is engedni kell (lásd build_3d_plot).
+            allowed_regions = set()
+            for rid in target_region_ids:
+                allowed_regions |= _expand_ids(rid, region_descendants)
             allowed_regions.add(result.soma_region_id)
 
         axon_traces = _build_axon_trace(

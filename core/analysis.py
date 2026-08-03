@@ -70,7 +70,13 @@ class FilterCriteria:
     # végpontjához képest [0..1]. NOT operátorral párosítva ez a L6-szűrő:
     # pl. "thalamus végpont-arány >= 2.5%" => NOT => a L6 sejtek kizárása.
     min_endpoint_fraction: float = 0.0
-    operator: str = 'AND'  # 'AND', 'OR', 'NOT'
+    # 'AND'  = ide vetítenie kell
+    # 'NOT'  = ide nem vetíthet
+    # 'OR'   = opcionális (legalább egy OR-régió teljesüljön)
+    # 'NONE' = CSAK MEGFIGYELÉS: a régió számai megjelennek, de a szűrést nem
+    #          befolyásolja. Enélkül egy pusztán "megnézni" hozzáadott régió
+    #          némán kötelező feltétellé vált volna.
+    operator: str = 'AND'
 
     def is_projection(self, endpoint_count: int, branch_point_count: int,
                       axon_length_um: float = 0.0, endpoint_fraction: float = 0.0) -> bool:
@@ -82,12 +88,15 @@ class FilterCriteria:
 
     def is_active(self) -> bool:
         """
-        Minden EXPLICIT szabály részt vesz a szűrésben: az AND azt jelenti,
-        "ide vetítenie kell", a NOT azt, "ide nem vetíthet", az OR az opcionális
-        uniót. (Korábban a küszöb nélküli AND némán kimaradt, ami miatt egy
-        kizáró szűrőtől NŐHETETT egy régió sejtszáma.)
+        Részt vesz-e ez a régió a SZŰRÉSBEN.
+
+        Minden explicit szabály (AND / NOT / OR) aktív - korábban a küszöb
+        nélküli AND némán kimaradt, ami miatt egy kizáró szűrőtől NŐHETETT egy
+        régió sejtszáma. A 'NONE' viszont szándékosan inaktív: így hozzá lehet
+        adni egy régiót pusztán megfigyelésre (látszanak a számai, exportba is
+        bekerül), anélkül hogy némán kötelező feltétellé válna.
         """
-        return True
+        return self.operator != 'NONE'
 
     def meets_thresholds(self, region_result: 'RegionResult') -> bool:
         """
@@ -367,7 +376,9 @@ def results_to_dataframe(
             'passes_filter': result.passes_filter,
         }
         for tr in result.target_results:
-            safe_col = tr.region_name.replace(' ', '_').lower()[:30]
+            # A régió ID-t is beletesszük, mert a 30 karakteres csonkolás miatt két
+            # hasonló nevű régió oszlopai egymásra íródhattak volna (néma adatvesztés).
+            safe_col = f"{tr.region_name.replace(' ', '_').lower()[:30]}_{tr.region_id}"
             row[f'{safe_col}_projects'] = tr.projects_here
             row[f'{safe_col}_endpoints'] = tr.endpoint_count
             row[f'{safe_col}_branches'] = tr.branch_point_count

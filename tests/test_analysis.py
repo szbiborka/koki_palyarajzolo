@@ -371,6 +371,104 @@ def test_projection_definition_is_global_and_consistent():
     assert "endpoint" in FilterCriteria(1, 0).describe()
 
 
+# ---------------------------------------------------------------------------
+# AUDIT-JAVÍTÁSOK
+# ---------------------------------------------------------------------------
+def test_observe_only_region_does_not_filter():
+    """Egy 'csak megfigyelés' régió hozzáadása nem eshet ki miatta egyetlen sejt sem."""
+    from core.analysis import apply_filter
+
+    atlas, dic = _atlas(), _dictionary()
+    # GPe-ben arborizál, a thalamust meg sem érinti
+    cell = _swc([
+        (1, 1, 1, -1), (2, 2, 2, 1), (3, 2, 7, 2), (4, 2, 7, 3), (5, 2, 7, 3),
+    ])
+    only_gpe = {GPE: FilterCriteria(operator='AND')}
+    r1 = apply_filter(run_analysis(cell, atlas, dic, [GPE], criteria_per_region=only_gpe), only_gpe)
+
+    # Thalamus hozzáadva CSAK MEGFIGYELÉSRE -> az eredmény nem változhat
+    observed = {GPE: FilterCriteria(operator='AND'), THAL: FilterCriteria(operator='NONE')}
+    r2 = apply_filter(run_analysis(cell, atlas, dic, [GPE, THAL], criteria_per_region=observed), observed)
+
+    assert r1.passes_filter is True
+    assert r2.passes_filter is True, "a megfigyelt régió nem szűrhet"
+    # ...de a számai attól még megjelennek
+    thal = next(t for t in r2.target_results if t.region_id == THAL)
+    assert thal.projects_here is False
+    assert FilterCriteria(operator='NONE').is_active() is False
+
+    # Kontroll: ugyanez 'Required (AND)'-del MÁR kiszűrné
+    required = {GPE: FilterCriteria(operator='AND'), THAL: FilterCriteria(operator='AND')}
+    r3 = apply_filter(run_analysis(cell, atlas, dic, [GPE, THAL], criteria_per_region=required), required)
+    assert r3.passes_filter is False
+
+
+def test_export_columns_unique_for_similar_region_names():
+    """A 30 karakterre csonkolt oszlopnevek nem írhatják felül egymást."""
+    from core.analysis import RegionResult, CellAnalysisResult, results_to_dataframe
+
+    n1 = "Brain stem descending Midbrain plus Hindbrain"
+    n2 = "Brain stem descending Midbrain minus Thalamus"
+    assert n1.replace(' ', '_').lower()[:30] == n2.replace(' ', '_').lower()[:30]  # ütköző prefix
+
+    res = CellAnalysisResult(1, 'M2', (0, 0, 0), [
+        RegionResult(11, n1, True, 5, 4, 9, 100.0, 0.1),
+        RegionResult(22, n2, False, 0, 0, 0, 0.0, 0.0),
+    ], [], 1000.0)
+    df = results_to_dataframe([("a.swc", res)], [11, 22], _dictionary())
+
+    proj_cols = [c for c in df.columns if c.endswith('_projects')]
+    assert len(proj_cols) == 2, f"az oszlopok egymásra íródtak: {proj_cols}"
+    assert df.iloc[0][f"{n1.replace(' ', '_').lower()[:30]}_11_projects"]      # megmaradt
+    assert not df.iloc[0][f"{n2.replace(' ', '_').lower()[:30]}_22_projects"]
+
+
+def test_3d_view_understands_parent_regions():
+    """A szülő régió felszíne, színe, markerei és az 'Axon-in-region' nézet is működjön."""
+    import numpy as np
+    from core.loader import build_region_descendants
+    from core.visualization import _region_mask, _expand_ids, _build_axon_trace
+
+    atlas = _atlas_with_bs()
+    dic = _dictionary_with_hierarchy()
+    desc = build_region_descendants(dic, [BS_PARENT])
+
+    # felszín: a szülő önmagában 0 voxel, feloldva viszont van
+    assert (atlas == BS_PARENT).sum() == 0
+    assert _region_mask(atlas, BS_PARENT, desc).sum() > 0
+
+    cell = _swc([
+        (1, 1, 1, -1), (2, 2, 7, 1), (3, 2, 8, 2), (4, 2, 9, 3), (5, 2, 9, 3),
+    ])
+    res = run_analysis(cell, atlas, dic, [BS_PARENT], desc)
+    co = res.coords
+    pr = co['point_regions']
+
+    # vetítési pont markerek: a levél-ID-kra is illeszkedjen
+    match = np.fromiter(_expand_ids(BS_PARENT, desc), dtype=int)
+    assert len(co['proj_idx'][np.isin(pr[co['proj_idx']], match)]) == 3
+
+    # "Axon-in-region" nézet ne tüntesse el a szülő régió axonjait
+    allowed = _expand_ids(BS_PARENT, desc) | {res.soma_region_id}
+    cmap = {rid: '#1f77b4' for rid in _expand_ids(BS_PARENT, desc)}
+    traces = _build_axon_trace(co['x'], co['y'], co['z'], co['curr_idx'],
+                               co['parent_row_indices'], co['is_axon'], pr, cmap, 2, allowed)
+    assert sum(len(t.x) for t in traces) > 0
+
+
+def test_soma_row_parser_accepts_float_type():
+    """A '1.0' típusmező is somának számít (különben a sejt kiesne az indexből)."""
+    import tempfile
+    from core.loader import _extract_soma_row
+
+    for type_field in ('1', '1.0'):
+        path = tempfile.mktemp(suffix='.swc')
+        with open(path, 'w') as f:
+            f.write(f"1 {type_field} 10 20 30 5 -1\n2 2 11 21 31 1 1\n")
+        assert _extract_soma_row(path) == (10.0, 20.0, 30.0), f"típusmező: {type_field}"
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
@@ -380,4 +478,8 @@ if __name__ == "__main__":
     test_cortical_summary_denominator()
     test_filter_never_contradicts_projection_flag()
     test_projection_definition_is_global_and_consistent()
+    test_observe_only_region_does_not_filter()
+    test_export_columns_unique_for_similar_region_names()
+    test_3d_view_understands_parent_regions()
+    test_soma_row_parser_accepts_float_type()
     print("All analysis regression tests passed.")

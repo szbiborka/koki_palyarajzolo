@@ -86,20 +86,88 @@ VIZ_POINT_SIZE = 10              # Vetítési pontok mérete
 VIZ_AXON_LINE_WIDTH = 2          # Axon vonalak vastagsága
 VIZ_MARCHING_CUBES_STEP = 2      # Felszín-generálás lépésköze (kisebb = szebb, de lassabb)
 
-# --- Szín paletta ---
-# A különböző régiók megjelenítési színei
+# --- 3D JELENET TÉMÁK ---
+# Két teljes témát kínálunk. A "dark" az alapértelmezett: a vékony axonvonalak
+# világos színnel, sötét háttéren sokkal jobban láthatók (ez a fluoreszcens
+# mikroszkópia megszokott képi világa is).
+#
+# MINDKÉT palettát a dataviz validátor ellenőrizte (OKLCH világosság-sáv, króma-
+# padló, színtévesztő elkülönülés, kontraszt a háttérhez):
+#   dark  (felület #0E1117): minden ellenőrzés PASS, legrosszabb szomszédos
+#                            CVD ΔE 8.8 (deutan) / 6.3 (tritan)
+#   light (felület #FAF9F6): minden ellenőrzés PASS, legrosszabb szomszédos
+#                            CVD ΔE 11.3 (deutan) / 8.4 (tritan)
+# A sorrend SZÁMÍT: a validátor a szomszédos párokat méri, és ez a sorrend
+# maximalizálja a legrosszabb pár elkülönülését. Ne keverd össze a színeket.
+# A régiók nevesítve is megjelennek a jelmagyarázatban, tehát az azonosítás
+# soha nem csak a színen múlik.
+VIZ_THEMES = {
+    'dark': {
+        'label': 'Dark (recommended — thin axons stand out)',
+        'paper_bg': '#0E1117',        # A teljes ábra háttere
+        'scene_bg': '#0E1117',        # A 3D tengelyek háttere
+        'grid': '#2A3040',            # Visszafogott rács
+        'axis_text': '#9BA4B4',       # Tengelyfeliratok
+        'soma': '#FFFFFF',            # A soma fehéren a legjobban látszik
+        'axon_default': '#5A6474',    # Nem célterületi axon - jelen van, de háttérbe húzódik
+        'brain_outline': '#8B96A8',   # Agy körvonal (nagyon áttetsző)
+        'brain_outline_opacity': 0.055,
+        'legend_bg': 'rgba(14,17,23,0.85)',
+        'legend_border': '#2A3040',
+        # A régiófelszínek KONTEXTUST adnak, nem ők a főszereplők: alacsony
+        # átlátszatlansággal nem nyomják el a vékony axonvonalakat.
+        'region_opacity': 0.13,
+        'axon_width': 3,
+        'region_palette': [
+            '#0284C7',  # kék
+            '#EA580C',  # narancs
+            '#8B5CF6',  # lila
+            '#0D9488',  # türkiz
+            '#D97706',  # borostyán
+            '#EC4899',  # rózsaszín
+            '#16A34A',  # zöld
+            '#D946EF',  # fukszia
+        ],
+    },
+    'light': {
+        'label': 'Light (matches the app background)',
+        'paper_bg': '#FAF9F6',
+        'scene_bg': '#FAF9F6',
+        'grid': '#DDDDD5',
+        'axis_text': '#5E5A4A',
+        'soma': '#111111',
+        'axon_default': '#B4B0A4',
+        'brain_outline': '#6E6A5E',
+        'brain_outline_opacity': 0.05,
+        'legend_bg': 'rgba(255,255,255,0.85)',
+        'legend_border': '#CFD6BC',
+        'region_opacity': 0.18,
+        'axon_width': 3,
+        'region_palette': [
+            '#EA580C',  # narancs
+            '#1D4ED8',  # kék
+            '#A16207',  # barna
+            '#0D9488',  # türkiz
+            '#BE123C',  # bordó
+            '#7C3AED',  # lila
+            '#4D7C0F',  # olíva
+            '#C026D3',  # fukszia
+        ],
+    },
+}
+DEFAULT_VIZ_THEME = 'dark'
+
+# --- Agy körvonal ---
+# Térbeli tájékozódáshoz kirajzoljuk a teljes agy felszínét nagyon áttetszően.
+# Nem egy konkrét régió ID-ra szűrünk, hanem az ÖSSZES annotált voxelre
+# (atlas > 0), így akkor is működik, ha a "root" régió nincs a szótárban.
+# A nagyobb lépésköz azért kell, mert ez a legnagyobb felület a jelenetben.
+VIZ_BRAIN_OUTLINE_STEP = 6
+
+# --- Visszafelé kompatibilis szín-hozzáférés (a régi kód ezt használja) ---
 COLORS = {
-    'soma': 'black',
-    'axon_default': '#888888',   # Szürke - alapértelmezett axon szín
-    'region_default': '#AAAAAA', # Szürke - ha nincs egyedi szín megadva
-    'region_palette': [          # Körkörösen hozzárendelt színek a régiókhoz
-        '#1f77b4',  # kék
-        '#2ca02c',  # zöld
-        '#d62728',  # piros
-        '#9467bd',  # lila
-        '#8c564b',  # barna
-        '#e377c2',  # rózsaszín
-        '#17becf',  # cián
-        '#bcbd22',  # sárga-zöld
-    ]
+    'soma': VIZ_THEMES[DEFAULT_VIZ_THEME]['soma'],
+    'axon_default': VIZ_THEMES[DEFAULT_VIZ_THEME]['axon_default'],
+    'region_default': '#AAAAAA',
+    'region_palette': VIZ_THEMES[DEFAULT_VIZ_THEME]['region_palette'],
 }

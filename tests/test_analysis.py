@@ -469,6 +469,74 @@ def test_soma_row_parser_accepts_float_type():
         os.unlink(path)
 
 
+# ---------------------------------------------------------------------------
+# PONTOSÍTÁSOK: határon felosztott axonhossz, határsejt-jelző, nevező, soma nélküli sejtek
+# ---------------------------------------------------------------------------
+def test_axon_length_is_split_at_region_boundaries():
+    """Egy határt átlépő szakasz hossza arányosan oszoljon meg a régiók között."""
+    atlas, dic = _atlas(), _dictionary()
+    # node2 (cortex, x=50um) -> node3 (GPe, x=175um): egyetlen 125 um-es szakasz,
+    # ami áthalad a thalamuson (x=75..125) és a TRN-en (x=125..150) is.
+    cell = _swc([
+        (1, 1, 1, -1), (2, 2, 2, 1), (3, 2, 7, 2), (4, 2, 7, 3), (5, 2, 7, 3),
+    ])
+    res = run_analysis(cell, atlas, dic, [CORTEX, THAL, TRN, GPE])
+    by = {t.region_name: t.axon_length_um for t in res.target_results}
+
+    # a köztes régiók már NEM nullák (régen a GPe kapta a teljes 125 um-t)
+    assert by["Thalamus"] > 0 and by["TRN"] > 0
+    assert by["GPe"] < 125.0
+    # és a részek összege kiadja a teljes axonhosszt
+    assert abs(sum(by.values()) - res.total_axon_length_um) < 1e-6
+
+
+def test_soma_border_flag():
+    """A régióhatáron ülő somát meg kell jelölni (bizonytalan besorolás)."""
+    atlas = np.zeros((20, 20, 20), dtype=int)
+    atlas[:10] = CORTEX
+    atlas[10:] = GPE
+    dic = pd.DataFrame({"id": [CORTEX, GPE], "safe_name": ["Cortex", "GPe"]})
+
+    def cell_at(vox_x):
+        return pd.DataFrame(
+            [[1, 1, vox_x * 25, 250, 250, 1.0, -1],
+             [2, 2, vox_x * 25 + 10, 250, 250, 1.0, 1]],
+            columns=["id", "type", "x", "y", "z", "radius", "pid"])
+
+    inside = run_analysis(cell_at(5), atlas, dic, [GPE])
+    border = run_analysis(cell_at(9), atlas, dic, [GPE])
+    assert inside.soma_is_border is False and inside.soma_border_fraction == 0.0
+    assert border.soma_is_border is True and border.soma_border_fraction > 0.0
+
+
+def test_endpoint_denominator_is_transparent():
+    """Külön látszik az összes és az annotált régióba eső végpontok száma."""
+    atlas = np.zeros((20, 20, 20), dtype=int)
+    atlas[:5] = CORTEX  # a tér nagy része annotálatlan (0)
+    dic = pd.DataFrame({"id": [CORTEX], "safe_name": ["Cortex"]})
+    cell = pd.DataFrame([
+        [1, 1, 50, 250, 250, 1.0, -1],
+        [2, 2, 60, 250, 250, 1.0, 1],
+        [3, 2, 400, 250, 250, 1.0, 2],   # annotálatlan területen végződik
+        [4, 2, 400, 260, 250, 1.0, 2],   # szintén
+    ], columns=["id", "type", "x", "y", "z", "radius", "pid"])
+    res = run_analysis(cell, atlas, dic, [CORTEX])
+    assert res.total_endpoint_count == 2
+    assert res.annotated_endpoint_count == 0
+
+
+def test_summary_excludes_cells_without_soma():
+    """A soma nélküli sejtek ne kapjanak saját sort az összesítőkben."""
+    from core.analysis import RegionResult, CellAnalysisResult, build_cortical_summary
+    good = CellAnalysisResult(GPE, 'M2', (0, 0, 0),
+                              [RegionResult(GPE, 'GPe', True, 3, 2, 5, 50.0, 0.1)], [], 100.0)
+    bad = CellAnalysisResult(-1, 'No soma found', (0, 0, 0),
+                             [RegionResult(GPE, 'GPe', True, 3, 2, 5, 50.0, 0.1)], [], 100.0)
+    s = build_cortical_summary([("a.swc", good), ("b.swc", bad)], None, [GPE], {GPE: 'GPe'}.get)
+    assert list(s['nelkul']['Soma Region']) == ['M2']
+    assert s['skipped_no_soma'] == 1
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
@@ -482,4 +550,8 @@ if __name__ == "__main__":
     test_export_columns_unique_for_similar_region_names()
     test_3d_view_understands_parent_regions()
     test_soma_row_parser_accepts_float_type()
+    test_axon_length_is_split_at_region_boundaries()
+    test_soma_border_flag()
+    test_endpoint_denominator_is_transparent()
+    test_summary_excludes_cells_without_soma()
     print("All analysis regression tests passed.")

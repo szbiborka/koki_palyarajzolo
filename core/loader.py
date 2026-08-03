@@ -11,7 +11,7 @@ import streamlit as st
 from config import (
     ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE, SOMA_INDEX_PATH,
     BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME, BRAINSTEM_MOTOR_ACRONYM,
-    BRAINSTEM_MOTOR_COMPONENTS,
+    BRAINSTEM_MOTOR_COMPONENTS, SWC_TYPE_SOMA,
 )
 
 
@@ -317,7 +317,14 @@ def _extract_soma_row(filepath: str) -> tuple[float, float, float] | None:
             if not line or line.startswith('#'):
                 continue
             parts = line.split()
-            if len(parts) >= 6 and parts[1] == '1':
+            # A típus lehet '1' vagy '1.0' is - float(...) mindkettőt kezeli.
+            # (Korábban a szigorú '1' egyezés miatt az ilyen fájlok "No soma"-t
+            # kaptak az indexben, és kiestek a soma-régió szerinti szűrésből.)
+            try:
+                is_soma = len(parts) >= 6 and int(float(parts[1])) == SWC_TYPE_SOMA
+            except ValueError:
+                is_soma = False
+            if is_soma:
                 # parts: [id, type, x, y, z, radius, pid]
                 return float(parts[2]), float(parts[3]), float(parts[4])
     return None

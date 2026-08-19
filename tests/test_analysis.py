@@ -537,6 +537,79 @@ def test_summary_excludes_cells_without_soma():
     assert s['skipped_no_soma'] == 1
 
 
+# ---------------------------------------------------------------------------
+# OLDALISÁG és KIZÁRÓLAGOS KATEGÓRIÁK
+# ---------------------------------------------------------------------------
+def _mirrored_atlas():
+    """Mindkét féltekén UGYANAZ a régió-ID (mint az Allen atlaszban)."""
+    N = 40
+    atlas = np.zeros((N, N, N), dtype=int)
+    atlas[5:35, 5:35, :] = CORTEX
+    atlas[15:25, 15:25, 4:10] = GPE     # bal oldali GPe
+    atlas[15:25, 15:25, 30:36] = GPE    # jobb oldali GPe - azonos ID!
+    return atlas
+
+
+def _cell_with_arbor_at_z(z_end):
+    return pd.DataFrame([
+        [1, 1, 20 * 25, 20 * 25, 8 * 25, 1.0, -1],                     # soma: BAL oldal
+        [2, 2, 20 * 25, 20 * 25, (8 + (z_end - 8) * 0.5) * 25, 1.0, 1],
+        [3, 2, 20 * 25, 20 * 25, z_end * 25, 1.0, 2],                  # elágazás
+        [4, 2, 21 * 25, 20 * 25, z_end * 25, 1.0, 3],                  # végpont
+        [5, 2, 19 * 25, 20 * 25, z_end * 25, 1.0, 3],                  # végpont
+    ], columns=["id", "type", "x", "y", "z", "radius", "pid"])
+
+
+def test_laterality_separates_ipsi_and_contra():
+    atlas = _mirrored_atlas()
+    dic = pd.DataFrame({"id": [CORTEX, GPE], "safe_name": ["Cortex", "GPe"]})
+    ipsi_cell = _cell_with_arbor_at_z(7)     # a soma oldalán
+    contra_cell = _cell_with_arbor_at_z(33)  # a túloldalon
+
+    # 'both' = korábbi viselkedés: a két sejt megkülönböztethetetlen
+    assert run_analysis(ipsi_cell, atlas, dic, [GPE]).target_results[0].projects_here is True
+    assert run_analysis(contra_cell, atlas, dic, [GPE]).target_results[0].projects_here is True
+
+    # 'ipsi' már szétválasztja őket
+    assert run_analysis(ipsi_cell, atlas, dic, [GPE],
+                        laterality='ipsi').target_results[0].projects_here is True
+    assert run_analysis(contra_cell, atlas, dic, [GPE],
+                        laterality='ipsi').target_results[0].projects_here is False
+
+    # a bontás akkor is látszik, ha 'both' módban futunk
+    t = run_analysis(contra_cell, atlas, dic, [GPE]).target_results[0]
+    assert t.endpoint_count_ipsi == 0 and t.endpoint_count_contra == 2
+
+
+def test_exclusive_categories_match_the_original_three_files():
+    """Nóra eredeti bontása: 'GPe + BS, de a TRN-be nem'."""
+    from core.analysis import RegionResult, CellAnalysisResult, build_cortical_summary
+    BS = 343
+
+    def rr(rid, name, p):
+        return RegionResult(rid, name, p, 1 if p else 0, 1 if p else 0,
+                            2 if p else 0, 10.0 if p else 0.0, 0.0)
+
+    def cell(bs, gpe, trn):
+        return CellAnalysisResult(999, 'M2', (0, 0, 0),
+                                  [rr(BS, 'BS', bs), rr(GPE, 'GPe', gpe), rr(TRN, 'TRN', trn)],
+                                  [], 1000.0)
+
+    pop = ([(f"g{i}.swc", cell(True, True, False)) for i in range(4)] +
+           [(f"t{i}.swc", cell(True, False, True)) for i in range(3)] +
+           [(f"b{i}.swc", cell(True, True, True)) for i in range(2)] +
+           [("n0.swc", cell(True, False, False))])
+    s = build_cortical_summary(pop, BS, [GPE, TRN], {BS: 'BS', GPE: 'GPe', TRN: 'TRN'}.get)
+    r = s['benne'].iloc[0]
+
+    assert r['GPe n'] == 6 and r['TRN n'] == 5          # inkluzív (a kettősökkel)
+    assert r['GPe only n'] == 4 and r['TRN only n'] == 3  # kizárólagos
+    assert r['All targets n'] == 2
+    # a kizárólagos részek + kettősök + egyik sem = az összes PT sejt
+    assert r['GPe only n'] + r['TRN only n'] + r['All targets n'] + 1 == r['PT Cells (BS=100%)']
+    assert s['categories']['GPe only'].iloc[0]['Projecting Cell IDs'] == "g0, g1, g2, g3"
+
+
 if __name__ == "__main__":
     test_passing_axon_is_not_a_projection()
     test_endpoint_fraction_identifies_l6()
@@ -554,4 +627,6 @@ if __name__ == "__main__":
     test_soma_border_flag()
     test_endpoint_denominator_is_transparent()
     test_summary_excludes_cells_without_soma()
+    test_laterality_separates_ipsi_and_contra()
+    test_exclusive_categories_match_the_original_three_files()
     print("All analysis regression tests passed.")

@@ -46,6 +46,12 @@ The **Cortical Summary** tab turns a batch run into the finished, ready-to-send 
 
 These use the strict projection definition (endpoint **and** branch) directly and always divide by the chosen base, so the "which denominator" and Layer-6-over-removal mistakes cannot occur. Every table is downloadable as CSV. Implemented in `build_cortical_summary` (`core/analysis.py`).
 
+### Hemisphere (laterality)
+The Allen atlas gives **both hemispheres the same region id**, so "projects to GPe" would otherwise count the opposite side as well. Since L5 pyramidal-tract cells project essentially ipsilaterally, counting both sides can only inflate the GPe/TRN numbers. A **Hemisphere** selector offers *both* (the previous behaviour, and the default so earlier results still reproduce), *ipsilateral only*, or *contralateral only*; the side is decided against the midline of the medio-lateral axis, relative to the soma. The ipsi/contra endpoint split is exported for every region regardless of the mode, so the size of the contralateral contribution is always visible.
+
+### Inclusive vs exclusive categories
+The summary reports each target twice. **`GPe n` / `TRN n`** are *inclusive* — a cell projecting to both is counted in both, which is what the "brain stem = 100%" percentages describe. **`GPe only n` / `TRN only n`** are *exclusive* — a cell counts only if it projects to that target and to none of the others, which is the mutually exclusive split of the original three category files. Both are shown side by side because mixing them up makes GPe and TRN look inflated; `only` + `only` + `All targets` + non-projectors accounts for every cell in the base population.
+
 ### Soma region filtering
 With thousands of SWC files, scrolling through a list is not practical. Type part of a region name — "motor", "thalamus", "striatum" — and the file list instantly narrows to only cells whose soma is located in a matching region. This is powered by a one-time index that scans all SWC files on first use and saves the result; subsequent loads are instant.
 

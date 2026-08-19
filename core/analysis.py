@@ -8,7 +8,7 @@ import pandas as pd
 
 from config import (
     VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED,
-    DEFAULT_FILTER,
+    DEFAULT_FILTER, MIDLINE_AXIS, DEFAULT_LATERALITY,
 )
 
 # A VETÍTÉS DEFINÍCIÓJA - EGYETLEN HELYEN
@@ -47,6 +47,15 @@ class RegionResult:
     # Ez teszi lehetővé a méret-független szűrést, pl. a L6 sejtek kiszűrését,
     # amelyek végpontjaik túlnyomó része a thalamusba esik.
     endpoint_fraction: float = 0.0
+    # OLDALISÁG: az Allen atlaszban mindkét félteke ugyanazt a régió-ID-t viseli,
+    # ezért külön számoljuk a soma oldalán (ipszi) és a túloldalon (kontra) lévő
+    # pontokat. Ezek MINDIG a teljes (mindkét oldali) képet mutatják, függetlenül
+    # attól, hogy a fenti számok melyik oldalról szólnak - így látható, mekkora a
+    # kontralaterális hozzájárulás.
+    endpoint_count_ipsi: int = 0
+    endpoint_count_contra: int = 0
+    branch_point_count_ipsi: int = 0
+    branch_point_count_contra: int = 0
 
 
 @dataclass
@@ -146,6 +155,8 @@ class CellAnalysisResult:
     # az atlaszon kívülre esőket is - ez a két szám teszi átláthatóvá a különbséget.
     total_endpoint_count: int = 0
     annotated_endpoint_count: int = 0
+    # Melyik oldal(ak) számítottak be a vetítésekbe ('both' / 'ipsi' / 'contra').
+    laterality: str = 'both'
 
     @property
     def soma_is_border(self) -> bool:
@@ -162,9 +173,16 @@ def run_analysis(
         target_region_ids: list[int],
         region_descendants: dict[int, set[int]] | None = None,
         region_names: dict[int, str] | None = None,
-        criteria_per_region: dict[int, 'FilterCriteria'] | None = None
+        criteria_per_region: dict[int, 'FilterCriteria'] | None = None,
+        laterality: str = DEFAULT_LATERALITY
 ) -> CellAnalysisResult:
     """
+    laterality: 'both' (alapértelmezés, a korábbi viselkedés), 'ipsi' vagy
+    'contra'. Az Allen atlaszban mindkét félteke ugyanazt a régió-ID-t viseli,
+    ezért a régió-ID önmagában nem árulja el az oldalt; a középvonalhoz képest
+    döntjük el. A RegionResult MINDIG tartalmazza az ipszi/kontra bontást is,
+    függetlenül attól, melyik módban futunk.
+
     criteria_per_region: régiónkénti vetítési kritérium. Ez határozza meg a
     projects_here értéket, így a szűrés és az összesítők is pontosan ezt követik.
     Ha egy régióhoz nincs megadva, az alapértelmezés (>=1 végpont ÉS >=1 elágazás)
@@ -295,6 +313,36 @@ def run_analysis(
         soma_name = "No soma found"
         soma_coords = (0.0, 0.0, 0.0)
 
+    # -------------------------------------------------------------------------
+    # OLDALISÁG (félteke)
+    # -------------------------------------------------------------------------
+    # Az atlaszban mindkét félteke UGYANAZT a régió-ID-t viseli, ezért a régió-ID
+    # önmagában nem árulja el az oldalt. A középvonal viszont fix koordináta: a
+    # medio-laterális tengely (MIDLINE_AXIS) felénél húzódik. Minden pontról így
+    # eldönthető, hogy a soma oldalán van-e.
+    vox_axes = (vox_x, vox_y, vox_z)
+    ml_vox = vox_axes[MIDLINE_AXIS]
+    midline = atlas_matrix.shape[MIDLINE_AXIS] / 2.0
+    # +1 / -1 a középvonal két oldalán (a pontosan a vonalon lévő 0-t kap)
+    point_side = np.sign(ml_vox.astype(float) - midline).astype(int)
+    soma_side = int(point_side[soma_idx]) if soma_idx is not None else 0
+
+    ep_side = point_side[ep_idx]
+    branch_side = point_side[branch_idx]
+
+    def _side_mask(sides: np.ndarray) -> np.ndarray:
+        """Melyik pontok számítanak bele a kért oldaliság szerint."""
+        # Ha nincs soma (vagy pont a középvonalon ül), nem tudjuk mihez viszonyítani,
+        # ezért ilyenkor nem szűrünk oldalra - különben némán nullázódna a sejt.
+        if laterality == 'both' or soma_side == 0:
+            return np.ones(len(sides), dtype=bool)
+        if laterality == 'ipsi':
+            return sides == soma_side
+        return (sides == -soma_side) & (sides != 0)
+
+    ep_keep = _side_mask(ep_side)
+    branch_keep = _side_mask(branch_side)
+
     # A sejt ÖSSZES axon-végpontja - ez a méret-független (%-os) szűrés nevezője.
     total_endpoint_count = int(len(ep_idx))
     region_descendants = region_descendants or {}
@@ -324,9 +372,23 @@ def run_analysis(
             region_name = name_matches[0] if name_matches else f"Unknown (ID: {region_id})"
 
         match = _match_ids(region_id)
-        ep_count = int(np.isin(ep_regions, match).sum())
-        br_count = int(np.isin(branch_regions, match).sum())
+        ep_in = np.isin(ep_regions, match)
+        br_in = np.isin(branch_regions, match)
+
+        # A kért oldaliság szerinti (a vetítést eldöntő) számok...
+        ep_count = int((ep_in & ep_keep).sum())
+        br_count = int((br_in & branch_keep).sum())
         proj_count = ep_count + br_count
+
+        # ...és MINDIG a teljes ipszi/kontra bontás is, hogy látható legyen,
+        # mekkora a kontralaterális hozzájárulás.
+        if soma_side != 0:
+            ep_ipsi = int((ep_in & (ep_side == soma_side)).sum())
+            ep_contra = int((ep_in & (ep_side == -soma_side)).sum())
+            br_ipsi = int((br_in & (branch_side == soma_side)).sum())
+            br_contra = int((br_in & (branch_side == -soma_side)).sum())
+        else:
+            ep_ipsi = ep_contra = br_ipsi = br_contra = 0
 
         # Határokon felosztott hossz (lásd length_by_region fent).
         axon_len = _axon_length_in(match)
@@ -344,6 +406,8 @@ def run_analysis(
             endpoint_count=ep_count, branch_point_count=br_count,
             projection_point_count=proj_count, axon_length_um=axon_len,
             endpoint_fraction=fraction,
+            endpoint_count_ipsi=ep_ipsi, endpoint_count_contra=ep_contra,
+            branch_point_count_ipsi=br_ipsi, branch_point_count_contra=br_contra,
         )
 
     target_results = [_build_region_result(region_id) for region_id in target_region_ids]
@@ -382,6 +446,7 @@ def run_analysis(
         total_axon_length_um=total_axon_length, coords=coords,
         soma_border_fraction=soma_border_fraction,
         total_endpoint_count=total_endpoint_count,
+        laterality=laterality,
         annotated_endpoint_count=int(np.sum(ep_regions > 0)),
     )
 
@@ -474,6 +539,9 @@ def results_to_dataframe(
             # Végpont-arány %-ban - ez alapján azonosíthatók a L6 sejtek
             # (pl. thalamus-arány > 2.5%).
             row[f'{safe_col}_endpoint_pct'] = round(tr.endpoint_fraction * 100, 2)
+            # Oldaliság-bontás: mindig látszik, mennyi jön a túloldalról.
+            row[f'{safe_col}_endpoints_ipsi'] = tr.endpoint_count_ipsi
+            row[f'{safe_col}_endpoints_contra'] = tr.endpoint_count_contra
             # Önmagát dokumentáló oszlop: milyen kritériummal készült a döntés.
             crit = criteria_per_region.get(tr.region_id)
             if crit is not None:
@@ -510,6 +578,22 @@ def _region_of(result: CellAnalysisResult, region_id: int) -> RegionResult | Non
 def _projects_to(result: CellAnalysisResult, region_id: int) -> bool:
     tr = _region_of(result, region_id)
     return bool(tr and tr.projects_here)
+
+
+def _only_projects_to(result: CellAnalysisResult, region_id: int,
+                      all_region_ids: list[int]) -> bool:
+    """
+    A sejt a célterületek közül KIZÁRÓLAG ebbe vetít.
+
+    Ez felel meg Nóra eredeti három kategóriájának ("GPe + BS, de a TRN-be nem").
+    Az inkluzív számok ettől eltérnek: azokban a kettősen vetítők is benne vannak.
+    A megkülönböztetés fontos - épp ezt hiányolta a július 2-i levelében
+    ("nem vettem figyelembe, hogy a kettőseket nem vetted be az 1x-es vetítésekhez").
+    """
+    if not _projects_to(result, region_id):
+        return False
+    return not any(_projects_to(result, other) for other in all_region_ids
+                   if int(other) != int(region_id))
 
 
 def build_cortical_summary(
@@ -561,6 +645,7 @@ def build_cortical_summary(
 
     benne_rows, nelkul_rows, axon_rows = [], [], []
     cat_rows: dict[str, list] = {lab: [] for lab in num_labels}
+    cat_only_rows: dict[str, list] = {lab: [] for lab in num_labels}
     cat_all_rows: list = []
 
     for soma, cells in sorted(groups.items()):
@@ -573,13 +658,27 @@ def build_cortical_summary(
         row_a = {"Soma Region": soma, "PT Cells": nbase}
 
         for rid, lab in zip(numerator_region_ids, num_labels):
+            # INKLUZÍV: ide vetít (akár máshova is). Ez felel meg Nóra július 3-i
+            # meghatározásának: "az 50 a 100% és a TRN-be vetítők aránya 50%".
             cb = sum(1 for (_, r) in base_cells if _projects_to(r, rid))
             row_b[f"{lab} n"] = cb
             row_b[f"{lab} %"] = round(100 * cb / nbase, 1) if nbase else 0.0
 
+            # EXKLUZÍV: CSAK ide vetít a célterületek közül. Ez felel meg a
+            # korábbi három fájlnak ("GPe + BS, de a TRN-be nem"). A kettő nem
+            # ugyanaz, ezért mindkettőt kiírjuk - így nem lehet összekeverni.
+            if len(numerator_region_ids) > 1:
+                cb_only = sum(1 for (_, r) in base_cells if _only_projects_to(r, rid, numerator_region_ids))
+                row_b[f"{lab} only n"] = cb_only
+                row_b[f"{lab} only %"] = round(100 * cb_only / nbase, 1) if nbase else 0.0
+
             cn = sum(1 for (_, r) in cells if _projects_to(r, rid))
             row_n[f"{lab} n"] = cn
             row_n[f"{lab} %"] = round(100 * cn / total, 1) if total else 0.0
+            if len(numerator_region_ids) > 1:
+                cn_only = sum(1 for (_, r) in cells if _only_projects_to(r, rid, numerator_region_ids))
+                row_n[f"{lab} only n"] = cn_only
+                row_n[f"{lab} only %"] = round(100 * cn_only / total, 1) if total else 0.0
 
             lens = [_region_of(r, rid).axon_length_um for (_, r) in base_cells if _projects_to(r, rid)]
             row_a[f"{lab} mean axon µm"] = round(sum(lens) / len(lens), 1) if lens else 0.0
@@ -591,6 +690,16 @@ def build_cortical_summary(
                 f"{lab} % of PT": round(100 * len(ids) / nbase, 1) if nbase else 0.0,
                 "Projecting Cell IDs": ", ".join(ids),
             })
+
+            if len(numerator_region_ids) > 1:
+                ids_only = sorted(_cell_serial(n) for (n, r) in base_cells
+                                  if _only_projects_to(r, rid, numerator_region_ids))
+                cat_only_rows[lab].append({
+                    "Soma Region": soma, base_col: nbase,
+                    f"{lab} only Projects": len(ids_only),
+                    f"{lab} only % of PT": round(100 * len(ids_only) / nbase, 1) if nbase else 0.0,
+                    "Projecting Cell IDs": ", ".join(ids_only),
+                })
 
         cb_all = sum(1 for (_, r) in base_cells if meets_all(r))
         row_b["All targets n"] = cb_all
@@ -619,6 +728,10 @@ def build_cortical_summary(
     for lab in num_labels:
         categories[lab] = pd.DataFrame(cat_rows[lab]).sort_values(f"{lab} Projects", ascending=False)
     if len(numerator_region_ids) > 1:
+        # Nóra eredeti három kategóriája: kizárólagos bontás + a "mindegyikbe".
+        for lab in num_labels:
+            categories[f"{lab} only"] = pd.DataFrame(cat_only_rows[lab]).sort_values(
+                f"{lab} only Projects", ascending=False)
         categories["All targets"] = pd.DataFrame(cat_all_rows).sort_values("All targets Projects", ascending=False)
 
     # Az exportok önmagukat dokumentálják: melyik régió milyen kritériummal ment.

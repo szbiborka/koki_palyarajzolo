@@ -11,6 +11,7 @@ from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER,
     BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME,
     VIZ_THEMES, DEFAULT_VIZ_THEME,
+    LATERALITY_MODES, DEFAULT_LATERALITY,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc,
@@ -371,6 +372,23 @@ with st.sidebar:
         "stricter, or set branch points to 0 for an endpoint-only rule."
     )
 
+    # OLDALISÁG: az atlaszban mindkét félteke ugyanazt a régió-ID-t viseli, ezért
+    # külön kell megmondani, hogy az azonos oldali (ipszi) vetítés számítson-e csak.
+    lat_labels = {v: k for k, v in LATERALITY_MODES.items()}
+    lat_choice = st.selectbox(
+        "Hemisphere", options=list(LATERALITY_MODES.values()),
+        index=list(LATERALITY_MODES.keys()).index(DEFAULT_LATERALITY),
+        help="The atlas gives both hemispheres the SAME region id, so 'projects to GPe' "
+             "otherwise counts the opposite side too. L5 pyramidal-tract cells project "
+             "essentially ipsilaterally, so counting both sides can only inflate the "
+             "GPe/TRN numbers. The ipsi/contra split is always exported either way.",
+        key="laterality_mode"
+    )
+    laterality = lat_labels[lat_choice]
+    if laterality != 'both':
+        st.caption(f"➜ Only **{lat_choice.split('(')[0].strip().lower()}** endpoints and "
+                   f"branch points count towards a projection.")
+
     criteria_per_region: dict[int, FilterCriteria] = {}
 
     if not selected_region_ids:
@@ -632,7 +650,8 @@ if run_button:
             # az alapértelmezett kritériummal készül, és az oldalsávban beállított
             # küszöbök semmit nem csinálnának (sem a pipára, sem a szűrésre).
             result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
-                                  region_descendants, region_names, criteria_per_region)
+                                  region_descendants, region_names, criteria_per_region,
+                                  laterality)
             result = apply_filter(result, criteria_per_region)
             return (cell_name, result, None)
         except Exception as e:
@@ -948,6 +967,14 @@ if 'results' in st.session_state and st.session_state['results']:
                     file_name=f"axon_length_summary_{tag}.csv", mime="text/csv", key="dl_axon")
 
                 st.markdown("**4. Category tables with projecting cell IDs**")
+                st.caption(
+                    "Two readings are provided. **GPe / TRN** are *inclusive* — a cell that "
+                    "projects to both appears in both (this matches the "
+                    "\"brain stem = 100%\" percentages above). **GPe only / TRN only** are "
+                    "*exclusive* — the mutually exclusive split used in the original three "
+                    "category files (\"GPe + BS, de a TRN-be nem\"). "
+                    "*only* + *only* + *All targets* + non-projectors = every PT cell."
+                )
                 for lab, df in summary['categories'].items():
                     safe = ''.join(ch if ch.isalnum() else '_' for ch in lab.lower())[:24]
                     with st.expander(f"{lab}  ({int(df.iloc[:, 2].sum())} cells)"):

@@ -34,6 +34,33 @@ SOMA_INDEX_PATH = os.environ.get(
 # Voxel méret mikrométerben (a 25-ös atlasz 25um felbontású)
 VOXEL_SIZE = 25
 
+# --- FÉLTEKE (oldaliság) ---
+# Az Allen atlaszban MINDKÉT félteke UGYANAZT a régió-ID-t viseli: nincs külön
+# "bal GPe" és "jobb GPe". Ezért önmagában a régió-ID alapján nem lehet
+# megkülönböztetni az azonos oldali (ipszilaterális) és az ellenoldali
+# (kontralaterális) vetítést.
+#
+# A középvonal viszont fix koordináta: a 25um-es CCF térfogat alakja
+# (AP, DV, ML) = (528, 320, 456), tehát a MEDIO-LATERÁLIS tengely az UTOLSÓ
+# (a kódban 'z'). A középvonal ennek a tengelynek a fele. Ebből minden pontról
+# eldönthető, hogy a soma oldalán van-e vagy sem.
+#
+# Biológiailag ez számít: az L5 pyramidal tract sejtek gyakorlatilag
+# IPSZILATERÁLISAN vetítenek a GPe/TRN/agytörzs felé, míg a kortiko-kortikális
+# axonok átkelnek a középvonalon. Ha mindkét oldalt beleszámoljuk, az csak
+# felfelé torzíthatja a GPe/TRN számokat.
+MIDLINE_AXIS = 2  # 0=AP, 1=DV, 2=ML (a kódban x, y, z sorrendben)
+
+# Melyik oldali vetítéseket számoljuk. Az alapértelmezés a KORÁBBI viselkedés
+# ('both'), hogy a már elküldött eredmények reprodukálhatók maradjanak; az
+# oldalsávban átállítható.
+LATERALITY_MODES = {
+    'both':   'Both hemispheres (previous behaviour)',
+    'ipsi':   'Ipsilateral only (same side as the soma)',
+    'contra': 'Contralateral only (opposite side)',
+}
+DEFAULT_LATERALITY = 'both'
+
 # --- Alapértelmezett célterületek ---
 # Ezek az ID-k az Allen Mouse Brain Atlaszból származnak.
 # A felhasználói felületen ezek lesznek előre kiválasztva,

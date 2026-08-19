@@ -358,6 +358,36 @@ with st.sidebar:
     st.divider()
 
     # -------------------------------------------------------------------------
+    # 2b. Hemisphere (laterality)
+    # -------------------------------------------------------------------------
+    # Az atlaszban MINDKÉT félteke ugyanazt a régió-ID-t viseli, ezért a régió-ID
+    # önmagában nem árulja el az oldalt - a felhasználónak kell eldöntenie.
+    st.markdown("**Hemisphere**",
+                help="The Allen atlas gives BOTH hemispheres the same region id, so "
+                     "'projects to GPe' would otherwise count the opposite side too. "
+                     "This is a scientific choice, so it is left to you. Whichever you "
+                     "pick, the ipsilateral/contralateral split is always exported, so "
+                     "you can see how much comes from the other side.")
+    _lat_keys = list(LATERALITY_MODES.keys())
+    _default_label = next(k for k, (code, _) in LATERALITY_MODES.items()
+                          if code == DEFAULT_LATERALITY)
+    lat_choice = st.radio(
+        label="Hemisphere",
+        options=_lat_keys,
+        index=_lat_keys.index(_default_label),
+        horizontal=True,
+        key="laterality_mode",
+        label_visibility="collapsed",
+    )
+    laterality, _lat_help = LATERALITY_MODES[lat_choice]
+    st.caption(f"➜ {_lat_help}")
+    if laterality == 'both':
+        st.caption("ℹ️ Both sides are counted together — the same as all earlier runs, "
+                   "so previous results stay reproducible.")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
     # 2. Projection criteria & set logic (AND/OR/NOT), per region
     # -------------------------------------------------------------------------
     # EGY hely dönt arról, mi számít vetítésnek: ugyanezek a számok hajtják a
@@ -371,23 +401,6 @@ with st.sidebar:
         "so an axon that merely passes through is not counted. Raise the numbers to be "
         "stricter, or set branch points to 0 for an endpoint-only rule."
     )
-
-    # OLDALISÁG: az atlaszban mindkét félteke ugyanazt a régió-ID-t viseli, ezért
-    # külön kell megmondani, hogy az azonos oldali (ipszi) vetítés számítson-e csak.
-    lat_labels = {v: k for k, v in LATERALITY_MODES.items()}
-    lat_choice = st.selectbox(
-        "Hemisphere", options=list(LATERALITY_MODES.values()),
-        index=list(LATERALITY_MODES.keys()).index(DEFAULT_LATERALITY),
-        help="The atlas gives both hemispheres the SAME region id, so 'projects to GPe' "
-             "otherwise counts the opposite side too. L5 pyramidal-tract cells project "
-             "essentially ipsilaterally, so counting both sides can only inflate the "
-             "GPe/TRN numbers. The ipsi/contra split is always exported either way.",
-        key="laterality_mode"
-    )
-    laterality = lat_labels[lat_choice]
-    if laterality != 'both':
-        st.caption(f"➜ Only **{lat_choice.split('(')[0].strip().lower()}** endpoints and "
-                   f"branch points count towards a projection.")
 
     criteria_per_region: dict[int, FilterCriteria] = {}
 
@@ -635,6 +648,7 @@ if run_button:
     st.session_state['region_descendants'] = region_descendants
     # A futtatáskor érvényes kritériumok az exportokhoz/összesítőkhöz.
     st.session_state['criteria_used'] = criteria_per_region
+    st.session_state['laterality_used'] = laterality
     # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
     region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
@@ -703,6 +717,7 @@ if 'results' in st.session_state and st.session_state['results']:
     criteria_used = st.session_state.get('criteria_used', saved_criteria)
     # A szülő->leszármazott feloldás a 3D nézethez (Brain stem, Thalamus stb.).
     descendants_used = st.session_state.get('region_descendants', {})
+    saved_laterality = st.session_state.get('laterality_used', 'both')
 
     st.divider()
 
@@ -938,7 +953,8 @@ if 'results' in st.session_state and st.session_state['results']:
                 st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
             else:
                 summary = build_cortical_summary(results, base_id, numerator_ids,
-                                                 _region_label, criteria_used)
+                                                 _region_label, criteria_used,
+                                                 laterality=saved_laterality)
                 tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
                 st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
                         f"Recorded in every downloaded file name (`{tag}`).")

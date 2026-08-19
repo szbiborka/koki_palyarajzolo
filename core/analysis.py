@@ -521,6 +521,7 @@ def results_to_dataframe(
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
             # Határsejt-jelző: a 25 um-es voxelrács miatt bizonytalan besorolás.
+            'hemisphere_mode': result.laterality,
             'soma_on_region_border': result.soma_is_border,
             'soma_border_fraction': round(result.soma_border_fraction, 2),
             # A végpont-arány nevezőjének átláthatósága: hány végpont esik
@@ -602,6 +603,7 @@ def build_cortical_summary(
         numerator_region_ids: list[int],
         region_label_fn,
         criteria_per_region: dict[int, 'FilterCriteria'] | None = None,
+        laterality: str | None = None,
 ) -> dict:
     """
     Kérgi régiónkénti összesítők a Nóra-féle definíciók szerint.
@@ -744,15 +746,22 @@ def build_cortical_summary(
         for c in used
     ) if used else True
 
+    # Az oldaliság is a kritérium része: ha nem "mindkét oldal", akkor a
+    # feliratban és a fájlnévben is szerepel, hogy később ne lehessen összekeverni.
+    lat = laterality or (results[0][1].laterality if results else 'both')
+    lat_note = {'ipsi': ' · ipsilateral only',
+                'contra': ' · contralateral only'}.get(lat, '')
+    lat_slug = {'ipsi': '_ipsi', 'contra': '_contra'}.get(lat, '')
+
     if uniform and used:
-        criteria_note = used[0].describe()
-        slug = used[0].slug()
+        criteria_note = used[0].describe() + lat_note
+        slug = used[0].slug() + lat_slug
     else:
         criteria_note = " · ".join(
             f"{region_label_fn(rid)}: {criteria_per_region.get(rid, FilterCriteria()).describe()}"
             for rid in involved
-        )
-        slug = "mixed"
+        ) + lat_note
+        slug = "mixed" + lat_slug
 
     return {"benne": benne, "nelkul": nelkul, "axon": axon,
             "categories": categories, "criteria_note": criteria_note, "slug": slug,

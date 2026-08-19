@@ -54,10 +54,14 @@ MIDLINE_AXIS = 2  # 0=AP, 1=DV, 2=ML (a kódban x, y, z sorrendben)
 # Melyik oldali vetítéseket számoljuk. Az alapértelmezés a KORÁBBI viselkedés
 # ('both'), hogy a már elküldött eredmények reprodukálhatók maradjanak; az
 # oldalsávban átállítható.
+# Rövid felirat a rádiógombhoz -> (belső kód, magyarázat)
 LATERALITY_MODES = {
-    'both':   'Both hemispheres (previous behaviour)',
-    'ipsi':   'Ipsilateral only (same side as the soma)',
-    'contra': 'Contralateral only (opposite side)',
+    'Both sides':    ('both',   'Counts a projection on either hemisphere (previous behaviour).'),
+    'Ipsilateral':   ('ipsi',   'Only the soma’s own side counts. L5 pyramidal-tract cells '
+                                'project essentially ipsilaterally, so this is the '
+                                'anatomically strict choice.'),
+    'Contralateral': ('contra', 'Only the opposite side counts — useful to see how much of a '
+                                'target is reached across the midline.'),
 }
 DEFAULT_LATERALITY = 'both'
 

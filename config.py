@@ -65,6 +65,13 @@ LATERALITY_MODES = {
 }
 DEFAULT_LATERALITY = 'both'
 
+# Mennyi kontralaterális AXONHOSSZ (um) kell ahhoz, hogy kijelentsük: az axon
+# TÉNYLEG átlépte a középvonalt. Nem nulla a küszöb, mert a középvonal közelében
+# futó axon a 25 um-es rács kerekítése miatt néhány mintányit "átlóghat" a
+# túloldalra anélkül, hogy valóban átkelne. Két voxelnyi hossz már nem kerekítési
+# hiba. Ez CSAK az "átkel-e" jelzőt érinti; a végpontok számlálását nem.
+CONTRA_CROSSING_MIN_AXON_UM = 50.0
+
 # --- Alapértelmezett célterületek ---
 # Ezek az ID-k az Allen Mouse Brain Atlaszból származnak.
 # A felhasználói felületen ezek lesznek előre kiválasztva,

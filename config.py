@@ -54,12 +54,23 @@ MIDLINE_AXIS = 2  # 0=AP, 1=DV, 2=ML (a kódban x, y, z sorrendben)
 # Melyik oldali vetítéseket számoljuk. Az alapértelmezés a KORÁBBI viselkedés
 # ('both'), hogy a már elküldött eredmények reprodukálhatók maradjanak; az
 # oldalsávban átállítható.
+# Rövid felirat a rádiógombhoz -> (belső kód, magyarázat)
 LATERALITY_MODES = {
-    'both':   'Both hemispheres (previous behaviour)',
-    'ipsi':   'Ipsilateral only (same side as the soma)',
-    'contra': 'Contralateral only (opposite side)',
+    'Both sides':    ('both',   'Counts a projection on either hemisphere (previous behaviour).'),
+    'Ipsilateral':   ('ipsi',   'Only the soma’s own side counts. L5 pyramidal-tract cells '
+                                'project essentially ipsilaterally, so this is the '
+                                'anatomically strict choice.'),
+    'Contralateral': ('contra', 'Only the opposite side counts — useful to see how much of a '
+                                'target is reached across the midline.'),
 }
 DEFAULT_LATERALITY = 'both'
+
+# Mennyi kontralaterális AXONHOSSZ (um) kell ahhoz, hogy kijelentsük: az axon
+# TÉNYLEG átlépte a középvonalt. Nem nulla a küszöb, mert a középvonal közelében
+# futó axon a 25 um-es rács kerekítése miatt néhány mintányit "átlóghat" a
+# túloldalra anélkül, hogy valóban átkelne. Két voxelnyi hossz már nem kerekítési
+# hiba. Ez CSAK az "átkel-e" jelzőt érinti; a végpontok számlálását nem.
+CONTRA_CROSSING_MIN_AXON_UM = 50.0
 
 # --- Alapértelmezett célterületek ---
 # Ezek az ID-k az Allen Mouse Brain Atlaszból származnak.

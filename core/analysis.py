@@ -9,6 +9,7 @@ import pandas as pd
 from config import (
     VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED,
     DEFAULT_FILTER, MIDLINE_AXIS, DEFAULT_LATERALITY,
+    CONTRA_CROSSING_MIN_AXON_UM,
 )
 
 # A VETÍTÉS DEFINÍCIÓJA - EGYETLEN HELYEN
@@ -158,10 +159,84 @@ class CellAnalysisResult:
     # Melyik oldal(ak) számítottak be a vetítésekbe ('both' / 'ipsi' / 'contra').
     laterality: str = 'both'
 
+    # --- EGÉSZ SEJTRE VONATKOZÓ OLDALISÁG (célterülettől FÜGGETLENÜL) ---
+    # Ezek a mezők a TELJES axonfát nézik a somához képest, és NEM függenek sem a
+    # kijelölt célterületektől, sem a 'laterality' beállítástól. Ezért akkor is
+    # értelmesek, ha egyetlen célterület sincs kiválasztva: pontosan ezekből derül
+    # ki, hogy egy sejt átvetít-e a túloldalra (kortiko-kortikális / IT jelleg)
+    # vagy szigorúan azonos oldali marad (pyramidal tract / PT jelleg).
+    soma_side: int = 0               # +1 / -1 a középvonal két oldalán, 0 = a vonalon
+    endpoints_ipsi_total: int = 0    # az ÖSSZES azonos oldali axon-végpont
+    endpoints_contra_total: int = 0  # az ÖSSZES ellenoldali axon-végpont
+    axon_length_ipsi_um: float = 0.0
+    axon_length_contra_um: float = 0.0
+    # A KÖZÉPVONALI voxelsorba eső axonhossz. Ez se nem azonos oldali, se nem
+    # ellenoldali: a középvonal egy 25 um széles voxelsor, az abban futó axonról
+    # (pl. maga a kérgestest keresztezési pontja) nem állítható, hogy már átért.
+    # Külön mezőként tartjuk, hogy az ipszi + kontra + középvonal pontosan
+    # kiadja a teljes axonhosszt - így nem tűnik el némán hossz a kimutatásból.
+    axon_length_midline_um: float = 0.0
+
     @property
     def soma_is_border(self) -> bool:
         """A soma régióhatáron van-e (a besorolás bizonytalan)."""
         return self.soma_border_fraction > 0.0
+
+    @property
+    def has_hemisphere(self) -> bool:
+        """Eldönthető-e egyáltalán az oldaliság ennél a sejtnél.
+
+        Ha nincs soma, vagy a soma pont a középvonalon ül, akkor nincs mihez
+        viszonyítani - az ilyen sejteket KÜLÖN kell kezelni, nem szabad némán
+        "nem vetít kontralaterálisan" kategóriába sorolni őket.
+        """
+        return self.soma_side != 0
+
+    @property
+    def projects_contralaterally(self) -> bool:
+        """Végződik-e axon a túloldalon.
+
+        Ez a szigorúbb, biológiailag érdekesebb kérdés: nem az számít, hogy az
+        axon átmegy-e a középvonalon, hanem hogy ott VÉGZŐDIK-e (terminális
+        arborizáció). Egy áthaladó rost nem ellenoldali vetítés.
+        """
+        return self.endpoints_contra_total > 0
+
+    @property
+    def crosses_midline(self) -> bool:
+        """Átlép-e az axon egyáltalán a középvonalon (küszöb felett)."""
+        return self.axon_length_contra_um >= CONTRA_CROSSING_MIN_AXON_UM
+
+    @property
+    def contra_endpoint_fraction(self) -> float:
+        """Az ellenoldali végpontok aránya az összes végponthoz képest [0..1]."""
+        if self.total_endpoint_count <= 0:
+            return 0.0
+        return self.endpoints_contra_total / self.total_endpoint_count
+
+    @property
+    def contra_axon_fraction(self) -> float:
+        """Az ellenoldali axonhossz aránya a teljes axonhosszhoz képest [0..1]."""
+        if self.total_axon_length_um <= 0:
+            return 0.0
+        return self.axon_length_contra_um / self.total_axon_length_um
+
+    @property
+    def laterality_class(self) -> str:
+        """A sejt oldalisági besorolása - ez a 'hány sejt nem vetít át' tábla alapja.
+
+        Négy, egymást KIZÁRÓ kategória:
+          'unknown'      - nincs soma vagy a középvonalon ül: nem dönthető el
+          'ipsi_only'    - az axon át sem lép a középvonalon
+          'crosses_only' - átlép, de a túloldalon nem végződik (áthaladó rost,
+                           vagy a rekonstrukció ott megszakadt)
+          'contra'       - ténylegesen végződik a túloldalon
+        """
+        if not self.has_hemisphere:
+            return 'unknown'
+        if self.projects_contralaterally:
+            return 'contra'
+        return 'crosses_only' if self.crosses_midline else 'ipsi_only'
 
 
 # FŐ ANALÍZIS FÜGGVÉNY
@@ -280,8 +355,22 @@ def run_analysis(
         # Régiónkénti hossz-összeg (a negatív/hibás ID-kat kiszűrjük)
         ok = samp_region >= 0
         length_by_region = np.bincount(samp_region[ok], weights=samp_len[ok])
+
+        # OLDALANKÉNTI hossz-összeg UGYANEBBŐL a mintavételezésből. Azért itt
+        # számoljuk, mert a határokon felosztott minták adják a helyes választ:
+        # egy középvonalat átlépő szakaszból csak a ténylegesen túloldali darab
+        # számít, nem a teljes szakasz. A somához viszonyítás később történik,
+        # ezért egyelőre abszolút oldalanként (-1 / 0 / +1) gyűjtünk.
+        samp_ml = (s_vx, s_vy, s_vz)[MIDLINE_AXIS]
+        samp_side = np.sign(samp_ml.astype(float) - (atlas_matrix.shape[MIDLINE_AXIS] / 2.0))
+        axon_length_by_side = {
+            -1: float(samp_len[samp_side < 0].sum()),
+            0: float(samp_len[samp_side == 0].sum()),
+            1: float(samp_len[samp_side > 0].sum()),
+        }
     else:
         length_by_region = np.zeros(1, dtype=float)
+        axon_length_by_side = {-1: 0.0, 0: 0.0, 1: 0.0}
 
     def _axon_length_in(match_ids: np.ndarray) -> float:
         """A megadott atlasz-ID-khez tartozó, határokon felosztott axonhossz."""
@@ -329,6 +418,29 @@ def run_analysis(
 
     ep_side = point_side[ep_idx]
     branch_side = point_side[branch_idx]
+
+    # -------------------------------------------------------------------------
+    # EGÉSZ SEJTRE VONATKOZÓ OLDALISÁG - célterület nélkül is értelmes
+    # -------------------------------------------------------------------------
+    # Fontos: ezek NEM a 'laterality' beállítás szerint szűrt számok, hanem a
+    # teljes axonfa bontása a somához képest. Így a "vetít-e a túloldalra"
+    # kérdésre akkor is válaszolni tudunk, ha egyetlen célterület sincs
+    # kijelölve - a kérdés ugyanis nem egy régióról szól, hanem a középvonalról.
+    if soma_side != 0:
+        endpoints_ipsi_total = int((ep_side == soma_side).sum())
+        endpoints_contra_total = int((ep_side == -soma_side).sum())
+        axon_length_ipsi_um = axon_length_by_side[soma_side]
+        axon_length_contra_um = axon_length_by_side[-soma_side]
+        axon_length_midline_um = axon_length_by_side[0]
+    else:
+        # Nincs soma, vagy pont a középvonalon ül: nincs mihez viszonyítani.
+        # Ilyenkor NEM tippelünk - a laterality_class 'unknown' lesz, és a sejt
+        # külön sorban jelenik meg, nem csúszik be az "azonos oldali" csoportba.
+        endpoints_ipsi_total = 0
+        endpoints_contra_total = 0
+        axon_length_ipsi_um = 0.0
+        axon_length_contra_um = 0.0
+        axon_length_midline_um = 0.0
 
     def _side_mask(sides: np.ndarray) -> np.ndarray:
         """Melyik pontok számítanak bele a kért oldaliság szerint."""
@@ -448,6 +560,12 @@ def run_analysis(
         total_endpoint_count=total_endpoint_count,
         laterality=laterality,
         annotated_endpoint_count=int(np.sum(ep_regions > 0)),
+        soma_side=soma_side,
+        endpoints_ipsi_total=endpoints_ipsi_total,
+        endpoints_contra_total=endpoints_contra_total,
+        axon_length_ipsi_um=axon_length_ipsi_um,
+        axon_length_contra_um=axon_length_contra_um,
+        axon_length_midline_um=axon_length_midline_um,
     )
 
 
@@ -521,12 +639,27 @@ def results_to_dataframe(
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
             # Határsejt-jelző: a 25 um-es voxelrács miatt bizonytalan besorolás.
+            'hemisphere_mode': result.laterality,
             'soma_on_region_border': result.soma_is_border,
             'soma_border_fraction': round(result.soma_border_fraction, 2),
             # A végpont-arány nevezőjének átláthatósága: hány végpont esik
             # egyáltalán annotált agyterületre.
             'endpoints_total': result.total_endpoint_count,
             'endpoints_in_annotated_regions': result.annotated_endpoint_count,
+            # --- EGÉSZ SEJTRE VONATKOZÓ OLDALISÁG (célterülettől függetlenül) ---
+            # Ezek akkor is kitöltődnek, ha nincs kijelölt célterület.
+            'laterality_class': result.laterality_class,
+            'projects_contralateral': result.projects_contralaterally,
+            'crosses_midline': result.crosses_midline,
+            'endpoints_ipsi_total': result.endpoints_ipsi_total,
+            'endpoints_contra_total': result.endpoints_contra_total,
+            'contra_endpoint_pct': round(result.contra_endpoint_fraction * 100, 2),
+            'axon_um_ipsi': round(result.axon_length_ipsi_um, 1),
+            'axon_um_contra': round(result.axon_length_contra_um, 1),
+            # A középvonali voxelsorba eső hossz külön: így ipszi+kontra+középvonal
+            # pontosan kiadja a teljes axonhosszt, nem tűnik el némán semmi.
+            'axon_um_midline': round(result.axon_length_midline_um, 1),
+            'contra_axon_pct': round(result.contra_axon_fraction * 100, 2),
         }
         for tr in result.target_results:
             # A régió ID-t is beletesszük, mert a 30 karakteres csonkolás miatt két
@@ -596,12 +729,124 @@ def _only_projects_to(result: CellAnalysisResult, region_id: int,
                    if int(other) != int(region_id))
 
 
+# OLDALISÁGI ÖSSZESÍTŐ - CÉLTERÜLET NÉLKÜL IS MŰKÖDIK
+# Erre a kérdésre válaszol: "az összes L5 sejt közül hány NEM vetít át a
+# túloldalra?" Ez NEM egy régióról szól, hanem a középvonalról, ezért nem kell
+# hozzá célterületet kijelölni. Biológiailag ez a klasszikus IT/PT szétválasztás:
+# a pyramidal tract (PT) sejtek gyakorlatilag azonos oldaliak, a
+# kortiko-kortikális (IT) sejtek átküldik az axonjukat a kérgestesten.
+
+LATERALITY_CLASS_LABELS = {
+    'ipsi_only':    'Ipsilateral only (no midline crossing)',
+    'crosses_only': 'Crosses midline, but no endpoints there',
+    'contra':       'Projects contralaterally (endpoints on the far side)',
+    'unknown':      'Undetermined (no soma, or soma on the midline)',
+}
+# A megjelenítés sorrendje: a szigorúan azonos oldali sejtektől a ténylegesen
+# átvetítőkig, a bizonytalanok a végén.
+LATERALITY_CLASS_ORDER = ['ipsi_only', 'crosses_only', 'contra', 'unknown']
+
+
+def build_laterality_summary(
+        results: list[tuple[str, CellAnalysisResult]]
+) -> dict:
+    """
+    Oldalisági összesítő az EGÉSZ sejtre, célterülettől függetlenül.
+
+    Visszaad egy dict-et:
+        'overall'   - DataFrame: kategóriánként sejtszám, % és a sorszámok
+        'by_soma'   - DataFrame: soma-régiónkénti bontás ugyanezekkel
+        'per_cell'  - DataFrame: sejtenkénti részletek (ellenőrzéshez)
+        'n_total'   - az összes elemzett sejt
+        'n_decided' - ahány sejtnél egyáltalán eldönthető volt az oldaliság
+
+    FONTOS a nevező: a százalékok az ELDÖNTHETŐ sejtekre vonatkoznak
+    (n_decided), nem az összesre. Egy soma nélküli sejtről nem állíthatjuk,
+    hogy "nem vetít kontralaterálisan" - csak azt, hogy nem tudjuk.
+    """
+    counts = {k: [] for k in LATERALITY_CLASS_ORDER}
+    by_soma: dict[str, dict[str, list[str]]] = {}
+    per_cell_rows = []
+
+    for cell_name, r in results:
+        cls = r.laterality_class
+        serial = _cell_serial(cell_name)
+        counts[cls].append(serial)
+
+        soma = r.soma_region_name
+        by_soma.setdefault(soma, {k: [] for k in LATERALITY_CLASS_ORDER})
+        by_soma[soma][cls].append(serial)
+
+        per_cell_rows.append({
+            'Cell': serial,
+            'Soma region': soma,
+            'Class': LATERALITY_CLASS_LABELS[cls],
+            'Endpoints ipsi': r.endpoints_ipsi_total,
+            'Endpoints contra': r.endpoints_contra_total,
+            'Contra endpoint %': round(r.contra_endpoint_fraction * 100, 2),
+            'Axon ipsi (um)': round(r.axon_length_ipsi_um, 1),
+            'Axon contra (um)': round(r.axon_length_contra_um, 1),
+            'Axon midline (um)': round(r.axon_length_midline_um, 1),
+            'Contra axon %': round(r.contra_axon_fraction * 100, 2),
+        })
+
+    n_total = len(results)
+    n_decided = n_total - len(counts['unknown'])
+
+    overall = pd.DataFrame([
+        {
+            'Category': LATERALITY_CLASS_LABELS[cls],
+            'Cells': len(counts[cls]),
+            # A bizonytalanoknál nincs értelmes százalék: nem tartoznak a nevezőbe.
+            '% of decided': (round(100 * len(counts[cls]) / n_decided, 1)
+                             if n_decided > 0 and cls != 'unknown' else None),
+            'Cell IDs': ", ".join(counts[cls]),
+        }
+        for cls in LATERALITY_CLASS_ORDER
+    ])
+
+    soma_rows = []
+    for soma, per_class in by_soma.items():
+        decided = sum(len(v) for k, v in per_class.items() if k != 'unknown')
+        not_contra = len(per_class['ipsi_only']) + len(per_class['crosses_only'])
+        soma_rows.append({
+            'Soma region': soma,
+            'Total cells': sum(len(v) for v in per_class.values()),
+            'Decided': decided,
+            'Ipsilateral only': len(per_class['ipsi_only']),
+            'Crosses, no endpoints': len(per_class['crosses_only']),
+            'Contralateral': len(per_class['contra']),
+            'Undetermined': len(per_class['unknown']),
+            # A közvetlen válasz a kérdésre: hány sejt NEM vetít át a túloldalra.
+            'No contralateral projection': not_contra,
+            'No contralateral %': (round(100 * not_contra / decided, 1)
+                                   if decided > 0 else None),
+            'Ipsilateral-only cell IDs': ", ".join(per_class['ipsi_only']),
+        })
+    by_soma_df = (pd.DataFrame(soma_rows)
+                  .sort_values(by='Total cells', ascending=False)
+                  if soma_rows else pd.DataFrame())
+
+    return {
+        'overall': overall,
+        'by_soma': by_soma_df,
+        'per_cell': pd.DataFrame(per_cell_rows),
+        'n_total': n_total,
+        'n_decided': n_decided,
+        # Nyers kategória-számok NÉV szerint. A UI ezt olvassa, nem a DataFrame
+        # sorindexeit - így a táblázat sorrendje szabadon változhat anélkül, hogy
+        # a fenti metrikák némán elcsúsznának.
+        'counts': {cls: len(ids) for cls, ids in counts.items()},
+    }
+
+
 def build_cortical_summary(
         results: list[tuple[str, CellAnalysisResult]],
         base_region_id: int | None,
         numerator_region_ids: list[int],
         region_label_fn,
         criteria_per_region: dict[int, 'FilterCriteria'] | None = None,
+        laterality: str | None = None,
 ) -> dict:
     """
     Kérgi régiónkénti összesítők a Nóra-féle definíciók szerint.
@@ -744,15 +989,22 @@ def build_cortical_summary(
         for c in used
     ) if used else True
 
+    # Az oldaliság is a kritérium része: ha nem "mindkét oldal", akkor a
+    # feliratban és a fájlnévben is szerepel, hogy később ne lehessen összekeverni.
+    lat = laterality or (results[0][1].laterality if results else 'both')
+    lat_note = {'ipsi': ' · ipsilateral only',
+                'contra': ' · contralateral only'}.get(lat, '')
+    lat_slug = {'ipsi': '_ipsi', 'contra': '_contra'}.get(lat, '')
+
     if uniform and used:
-        criteria_note = used[0].describe()
-        slug = used[0].slug()
+        criteria_note = used[0].describe() + lat_note
+        slug = used[0].slug() + lat_slug
     else:
         criteria_note = " · ".join(
             f"{region_label_fn(rid)}: {criteria_per_region.get(rid, FilterCriteria()).describe()}"
             for rid in involved
-        )
-        slug = "mixed"
+        ) + lat_note
+        slug = "mixed" + lat_slug
 
     return {"benne": benne, "nelkul": nelkul, "axon": axon,
             "categories": categories, "criteria_note": criteria_note, "slug": slug,

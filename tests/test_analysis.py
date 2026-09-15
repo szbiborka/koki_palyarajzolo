@@ -13,7 +13,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.analysis import run_analysis, apply_filter, FilterCriteria
+from core.analysis import (
+    run_analysis, apply_filter, FilterCriteria,
+    build_laterality_summary, LATERALITY_CLASS_LABELS,
+)
+from config import CONTRA_CROSSING_MIN_AXON_UM
 
 CORTEX, THAL, TRN, GPE = 100, 549, 262, 1022
 
@@ -581,6 +585,115 @@ def test_laterality_separates_ipsi_and_contra():
     assert t.endpoint_count_ipsi == 0 and t.endpoint_count_contra == 2
 
 
+# ---------------------------------------------------------------------------
+# CÉLTERÜLET NÉLKÜLI FUTÁS — a féltekei kérdés az EGÉSZ sejtre vonatkozik.
+# "Hány L5 sejt NEM vetít a túloldalra?" nem egy régióról szól, hanem a
+# középvonalról, ezért célterület kijelölése nélkül is megválaszolható kell
+# legyen. Régen az app egyáltalán el sem indult célterület nélkül.
+# ---------------------------------------------------------------------------
+def test_whole_cell_laterality_needs_no_target_region():
+    atlas = _mirrored_atlas()
+    dic = pd.DataFrame({"id": [CORTEX, GPE], "safe_name": ["Cortex", "GPe"]})
+
+    ipsi = run_analysis(_cell_with_arbor_at_z(7), atlas, dic, [])
+    contra = run_analysis(_cell_with_arbor_at_z(33), atlas, dic, [])
+
+    # Egyetlen célterület sincs - mégis van válasz.
+    assert ipsi.target_results == []
+    assert contra.target_results == []
+
+    assert ipsi.laterality_class == 'ipsi_only'
+    assert ipsi.projects_contralaterally is False
+    assert ipsi.endpoints_contra_total == 0
+    assert ipsi.endpoints_ipsi_total == 2
+
+    assert contra.laterality_class == 'contra'
+    assert contra.projects_contralaterally is True
+    assert contra.endpoints_contra_total == 2
+    assert contra.endpoints_ipsi_total == 0
+
+
+# ---------------------------------------------------------------------------
+# A középvonal ÁTLÉPÉSE és az ellenoldali VÉGZŐDÉS nem ugyanaz. Egy csonkolt
+# rekonstrukció átmehet a túloldalra és ott egyszerűen abbamaradhat - ez nem
+# bizonyíték ellenoldali vetítésre, de arra sem, hogy a sejt azonos oldali.
+# Ezért kap külön kategóriát, nem csúszik némán egyik irányba sem.
+# ---------------------------------------------------------------------------
+def test_crossing_without_endpoints_is_a_separate_category():
+    atlas = _mirrored_atlas()
+    dic = pd.DataFrame({"id": [CORTEX, GPE], "safe_name": ["Cortex", "GPe"]})
+
+    # soma bal oldalt (z=8), az axon átmegy jobbra (z=33), majd VISSZAJÖN és
+    # bal oldalt végződik (z=7). Ellenoldali végpont tehát nincs.
+    cell = pd.DataFrame([
+        [1, 1, 20 * 25, 20 * 25, 8 * 25, 1.0, -1],
+        [2, 2, 20 * 25, 20 * 25, 33 * 25, 1.0, 1],
+        [3, 2, 20 * 25, 20 * 25, 7 * 25, 1.0, 2],
+    ], columns=["id", "type", "x", "y", "z", "radius", "pid"])
+
+    r = run_analysis(cell, atlas, dic, [])
+    assert r.endpoints_contra_total == 0      # a túloldalon nem végződik
+    assert r.crosses_midline is True          # de átkelt
+    assert r.laterality_class == 'crosses_only'
+    assert r.projects_contralaterally is False
+
+    # A kontralaterális axonhossz valódi, nem kerekítési maradék.
+    assert r.axon_length_contra_um > CONTRA_CROSSING_MIN_AXON_UM
+    # Az ipszi + kontra + középvonali hossz PONTOSAN kiadja a teljes axonhosszt:
+    # a mintavételezés particionál, tehát nem tűnhet el némán hossz. A középvonal
+    # egy 25 um-es voxelsor, az abban futó darab külön bucketbe kerül.
+    assert abs((r.axon_length_ipsi_um + r.axon_length_contra_um
+                + r.axon_length_midline_um) - r.total_axon_length_um) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Soma nélküli sejtnél nincs mihez viszonyítani. Ilyenkor NEM állíthatjuk, hogy
+# "nem vetít kontralaterálisan" - csak azt, hogy nem tudjuk. Az ilyen sejt saját
+# kategóriát kap, és KIMARAD a százalékok nevezőjéből.
+# ---------------------------------------------------------------------------
+def test_undetermined_cells_are_excluded_from_laterality_percentages():
+    atlas = _mirrored_atlas()
+    dic = pd.DataFrame({"id": [CORTEX, GPE], "safe_name": ["Cortex", "GPe"]})
+
+    no_soma = pd.DataFrame([
+        [1, 2, 20 * 25, 20 * 25, 8 * 25, 1.0, -1],
+        [2, 2, 20 * 25, 20 * 25, 7 * 25, 1.0, 1],
+    ], columns=["id", "type", "x", "y", "z", "radius", "pid"])
+
+    results = [
+        ("a.swc", run_analysis(_cell_with_arbor_at_z(7), atlas, dic, [])),
+        ("b.swc", run_analysis(_cell_with_arbor_at_z(33), atlas, dic, [])),
+        ("c.swc", run_analysis(no_soma, atlas, dic, [])),
+    ]
+    summary = build_laterality_summary(results)
+
+    assert summary['n_total'] == 3
+    assert summary['n_decided'] == 2          # a soma nélküli nem számít bele
+    assert summary['counts']['unknown'] == 1
+    assert summary['counts']['ipsi_only'] == 1
+    assert summary['counts']['contra'] == 1
+
+    # A nevező az ELDÖNTHETŐ sejtek száma: 1/2 = 50%, nem 1/3 = 33.3%.
+    overall = summary['overall'].set_index('Category')
+    ipsi_label = LATERALITY_CLASS_LABELS['ipsi_only']
+    assert overall.loc[ipsi_label, '% of decided'] == 50.0
+    # A bizonytalan sorhoz nem tartozik százalék (pandas NaN-ként tárolja).
+    assert pd.isna(overall.loc[LATERALITY_CLASS_LABELS['unknown'], '% of decided'])
+
+    # A soma-régiónkénti tábla is az eldönthetőkkel számol. (A szintetikus soma
+    # a GPe voxelblokkban ül - itt a régió neve mellékes, a számok a lényeg.)
+    by_soma = summary['by_soma'].set_index('Soma region')
+    soma_row = by_soma.loc["GPe"]
+    assert soma_row['Decided'] == 2
+    assert soma_row['No contralateral projection'] == 1
+    assert soma_row['No contralateral %'] == 50.0
+
+    # A soma nélküli sejt SAJÁT sorba kerül, és nem tartozik hozzá százalék -
+    # nem keveredik bele egyetlen valódi régió statisztikájába sem.
+    assert by_soma.loc["No soma found", 'Undetermined'] == 1
+    assert pd.isna(by_soma.loc["No soma found", 'No contralateral %'])
+
+
 def test_exclusive_categories_match_the_original_three_files():
     """Nóra eredeti bontása: 'GPe + BS, de a TRN-be nem'."""
     from core.analysis import RegionResult, CellAnalysisResult, build_cortical_summary
@@ -628,5 +741,8 @@ if __name__ == "__main__":
     test_endpoint_denominator_is_transparent()
     test_summary_excludes_cells_without_soma()
     test_laterality_separates_ipsi_and_contra()
+    test_whole_cell_laterality_needs_no_target_region()
+    test_crossing_without_endpoints_is_a_separate_category()
+    test_undetermined_cells_are_excluded_from_laterality_percentages()
     test_exclusive_categories_match_the_original_three_files()
     print("All analysis regression tests passed.")

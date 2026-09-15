@@ -21,7 +21,7 @@ from core.loader import (
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
-    build_cortical_summary, build_laterality_summary, LATERALITY_CLASS_LABELS
+    build_cortical_summary
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
@@ -343,60 +343,17 @@ with st.sidebar:
     # -------------------------------------------------------------------------
     # 1. Target Regions
     # -------------------------------------------------------------------------
-    st.markdown("**Target Brain Regions** *(optional)*",
-                help="Regions where you are looking for projections. Deep analysis "
-                     "runs only for the regions in this list. You may leave this "
-                     "EMPTY: the hemisphere analysis asks whether the axon crosses "
-                     "the midline, which is a question about the whole cell, not "
-                     "about any particular region.")
+    st.markdown("**Target Brain Regions**",
+                help="Specify the regions where you are looking for projections (innervations). Deep analysis will only be run for the regions in this list.")
     selected_region_names = st.multiselect(
         label="Search and select regions",
         options=list(region_options.keys()),
         default=[name for name in region_options.keys() if region_options[name] in DEFAULT_TARGET_REGIONS.values()],
-        help="Start typing the region name or acronym (e.g., M2, GPe). Leave empty "
-             "for a hemisphere-only run.",
+        help="Start typing the region name or acronym (e.g., M2, GPe).",
         key="region_selector",
         label_visibility="collapsed"
     )
     selected_region_ids = [region_options[name] for name in selected_region_names]
-
-    if not selected_region_ids:
-        # Nem hiba, hanem egy értelmes üzemmód - de mondjuk is meg, mi marad.
-        st.caption(
-            "No target region — the run will still produce the **Hemisphere** tab "
-            "(ipsilateral vs. contralateral for the whole cell). Region-specific "
-            "tables and the Cortical Summary need at least one region."
-        )
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # 2b. Hemisphere (laterality)
-    # -------------------------------------------------------------------------
-    # Az atlaszban MINDKÉT félteke ugyanazt a régió-ID-t viseli, ezért a régió-ID
-    # önmagában nem árulja el az oldalt - a felhasználónak kell eldöntenie.
-    st.markdown("**Hemisphere**",
-                help="The Allen atlas gives BOTH hemispheres the same region id, so "
-                     "'projects to GPe' would otherwise count the opposite side too. "
-                     "This is a scientific choice, so it is left to you. Whichever you "
-                     "pick, the ipsilateral/contralateral split is always exported, so "
-                     "you can see how much comes from the other side.")
-    _lat_keys = list(LATERALITY_MODES.keys())
-    _default_label = next(k for k, (code, _) in LATERALITY_MODES.items()
-                          if code == DEFAULT_LATERALITY)
-    lat_choice = st.radio(
-        label="Hemisphere",
-        options=_lat_keys,
-        index=_lat_keys.index(_default_label),
-        horizontal=True,
-        key="laterality_mode",
-        label_visibility="collapsed",
-    )
-    laterality, _lat_help = LATERALITY_MODES[lat_choice]
-    st.caption(f"➜ {_lat_help}")
-    if laterality == 'both':
-        st.caption("ℹ️ Both sides are counted together — the same as all earlier runs, "
-                   "so previous results stay reproducible.")
 
     st.divider()
 
@@ -414,6 +371,23 @@ with st.sidebar:
         "so an axon that merely passes through is not counted. Raise the numbers to be "
         "stricter, or set branch points to 0 for an endpoint-only rule."
     )
+
+    # OLDALISÁG: az atlaszban mindkét félteke ugyanazt a régió-ID-t viseli, ezért
+    # külön kell megmondani, hogy az azonos oldali (ipszi) vetítés számítson-e csak.
+    lat_labels = {v: k for k, v in LATERALITY_MODES.items()}
+    lat_choice = st.selectbox(
+        "Hemisphere", options=list(LATERALITY_MODES.values()),
+        index=list(LATERALITY_MODES.keys()).index(DEFAULT_LATERALITY),
+        help="The atlas gives both hemispheres the SAME region id, so 'projects to GPe' "
+             "otherwise counts the opposite side too. L5 pyramidal-tract cells project "
+             "essentially ipsilaterally, so counting both sides can only inflate the "
+             "GPe/TRN numbers. The ipsi/contra split is always exported either way.",
+        key="laterality_mode"
+    )
+    laterality = lat_labels[lat_choice]
+    if laterality != 'both':
+        st.caption(f"➜ Only **{lat_choice.split('(')[0].strip().lower()}** endpoints and "
+                   f"branch points count towards a projection.")
 
     criteria_per_region: dict[int, FilterCriteria] = {}
 
@@ -627,10 +601,7 @@ with st.sidebar:
 
 # MAIN CONTENT (TABS LAYOUT)
 
-# A célterület SZÁNDÉKOSAN nem kötelező: a féltekei (középvonal-átlépési) elemzés
-# az egész sejtre vonatkozik, nem egy régióra, ezért régiók nélkül is van értelme
-# futtatni. Csak sejt kell hozzá.
-if not selected_swc_paths:
+if not selected_swc_paths or not selected_region_ids:
     st.markdown(f"""
     <div class="page-header" style="text-align: center; margin-top: 10vh;">
         <div style="display: flex; justify-content: center; margin-bottom: 20px;">{NEURON_MARK}</div>
@@ -639,11 +610,7 @@ if not selected_swc_paths:
     </div>
     """, unsafe_allow_html=True)
 
-    st.info(
-        "**Welcome.** Select one or more cell files from the sidebar to begin. "
-        "Target regions are optional — without them you still get the hemisphere "
-        "(midline crossing) analysis."
-    )
+    st.info("**Welcome.** Select target brain regions and one or more cell files from the sidebar to begin.")
     st.stop()
 
 # --- Run Button ---
@@ -668,7 +635,6 @@ if run_button:
     st.session_state['region_descendants'] = region_descendants
     # A futtatáskor érvényes kritériumok az exportokhoz/összesítőkhöz.
     st.session_state['criteria_used'] = criteria_per_region
-    st.session_state['laterality_used'] = laterality
     # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
     region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
@@ -737,7 +703,6 @@ if 'results' in st.session_state and st.session_state['results']:
     criteria_used = st.session_state.get('criteria_used', saved_criteria)
     # A szülő->leszármazott feloldás a 3D nézethez (Brain stem, Thalamus stb.).
     descendants_used = st.session_state.get('region_descendants', {})
-    saved_laterality = st.session_state.get('laterality_used', 'both')
 
     st.divider()
 
@@ -764,33 +729,8 @@ if 'results' in st.session_state and st.session_state['results']:
             m2.metric("Confirmed projections", f"{proj_count} / {len(result.target_results)} targets")
             m3.metric("Total axon length", f"{result.total_axon_length_um:,.0f} µm")
 
-            # --- Oldaliság az EGÉSZ sejtre: célterület nélkül is ez az érdemi adat ---
             st.markdown("<br>", unsafe_allow_html=True)
-            section_header("Hemisphere")
-            if result.has_hemisphere:
-                h1, h2, h3 = st.columns(3)
-                h1.metric("Laterality", LATERALITY_CLASS_LABELS[result.laterality_class])
-                h2.metric("Endpoints ipsi / contra",
-                          f"{result.endpoints_ipsi_total} / {result.endpoints_contra_total}")
-                h3.metric("Axon contra",
-                          f"{result.axon_length_contra_um:,.0f} µm "
-                          f"({result.contra_axon_fraction * 100:.1f}%)")
-            else:
-                st.info(
-                    "Laterality cannot be determined for this cell — there is no soma, "
-                    "or the soma sits exactly on the midline, so there is no side to "
-                    "compare the axon against."
-                )
-
-            if result.target_results:
-                st.markdown("<br>", unsafe_allow_html=True)
-                section_header("Target Region Results")
-            else:
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.caption(
-                    "No target region selected — only whole-cell measures are shown. "
-                    "Add a region in the sidebar for per-region projection results."
-                )
+            section_header("Target Region Results")
 
             for tr in result.target_results:
                 cr = saved_criteria.get(tr.region_id, FilterCriteria())
@@ -858,9 +798,8 @@ if 'results' in st.session_state and st.session_state['results']:
 
     # BATCH VIEW
     else:
-        tab_stats, tab_hemi, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
-            ["Population Statistics", "Hemisphere", "Cortical Summary",
-             "Single Cell Inspector", "Combined 3D View"])
+        tab_stats, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
+            ["Population Statistics", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"])
 
         with tab_stats:
             passed = sum(1 for _, r in results if r.passes_filter is True)
@@ -951,109 +890,6 @@ if 'results' in st.session_state and st.session_state['results']:
             csv_data = summary_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Dataset (CSV)", data=csv_data, file_name="batch_results.csv", mime="text/csv")
 
-        # HEMISPHERE TAB — az EGÉSZ sejtre vonatkozó oldaliság, célterület nélkül is
-        # Ez a fül arra a kérdésre válaszol, hogy "hány sejt NEM vetít a túloldalra".
-        # Szándékosan FÜGGETLEN a célterületektől és az oldalsávi Hemisphere
-        # beállítástól: a középvonal-átlépés az egész axonfa tulajdonsága.
-        with tab_hemi:
-            section_header("Hemisphere — does the axon cross the midline?")
-            st.caption(
-                "This tab looks at the **whole axon tree** relative to the soma, so it "
-                "needs no target region and ignores the sidebar Hemisphere setting "
-                "(that one restricts counting *inside* a region). Biologically this is "
-                "the IT/PT split: pyramidal-tract cells stay essentially ipsilateral, "
-                "cortico-cortical cells send an axon across the corpus callosum."
-            )
-
-            lat = build_laterality_summary(results)
-
-            m1, m2, m3, m4 = st.columns(4)
-            n_ipsi_only = lat['counts']['ipsi_only']
-            n_crosses = lat['counts']['crosses_only']
-            n_contra = lat['counts']['contra']
-            m1.metric("Cells analyzed", lat['n_total'])
-            m2.metric("Ipsilateral only", n_ipsi_only,
-                      help="The axon never crosses the midline.")
-            m3.metric("No contralateral endpoints", n_ipsi_only + n_crosses,
-                      help="Ipsilateral-only cells PLUS cells whose axon crosses but "
-                           "does not terminate on the far side. This is the direct "
-                           "answer to 'how many cells do not project contralaterally'.")
-            m4.metric("Projects contralaterally", n_contra)
-
-            if lat['n_decided'] < lat['n_total']:
-                st.warning(
-                    f"{lat['n_total'] - lat['n_decided']} cell(s) could not be "
-                    "classified (no soma, or the soma sits exactly on the midline). "
-                    "They are shown separately and are **excluded from the "
-                    "percentages** — we cannot claim they are ipsilateral, only that "
-                    "we do not know."
-                )
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            section_header("Overall")
-            st.dataframe(
-                lat['overall'], use_container_width=True, hide_index=True,
-                column_config={
-                    "% of decided": st.column_config.NumberColumn(
-                        "% of decided", format="%.1f%%",
-                        help="Denominator is the number of cells where laterality "
-                             "could be determined, not the total."
-                    ),
-                    "Cell IDs": st.column_config.TextColumn("Cell IDs", width="large"),
-                },
-            )
-
-            st.info(
-                "**Why three categories and not two.** A truncated reconstruction can "
-                "show an axon crossing the midline and then simply stopping — that is "
-                "not evidence of a contralateral projection, but it is not evidence of "
-                "an ipsilateral-only cell either. Keeping *crosses, no endpoints* "
-                "separate means you can decide which way to count it instead of the "
-                "program deciding silently."
-            )
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            section_header("By soma region")
-            st.caption(
-                "One row per soma region — so a soma filter of 'layer 5' gives you the "
-                "layer-5 answer directly."
-            )
-            if not lat['by_soma'].empty:
-                st.dataframe(
-                    lat['by_soma'], use_container_width=True, hide_index=True,
-                    column_config={
-                        "No contralateral %": st.column_config.NumberColumn(
-                            "No contralateral %", format="%.1f%%",
-                            help="(Ipsilateral only + crosses without endpoints) "
-                                 "÷ cells where laterality could be determined."
-                        ),
-                        "Ipsilateral-only cell IDs": st.column_config.TextColumn(
-                            "Ipsilateral-only cell IDs", width="large",
-                            help="Serial numbers for lookup in the database."
-                        ),
-                    },
-                )
-                st.download_button(
-                    "Download Hemisphere Summary (CSV)",
-                    data=lat['by_soma'].to_csv(index=False).encode('utf-8'),
-                    file_name="hemisphere_by_soma_region.csv", mime="text/csv",
-                    key="download_hemi_soma"
-                )
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            section_header("Cell by cell")
-            st.caption(
-                "The raw numbers behind the classification, so any single cell can be "
-                "checked by hand in the 3D viewer."
-            )
-            st.dataframe(lat['per_cell'], use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download Per-Cell Laterality (CSV)",
-                data=lat['per_cell'].to_csv(index=False).encode('utf-8'),
-                file_name="hemisphere_per_cell.csv", mime="text/csv",
-                key="download_hemi_cells"
-            )
-
         # CORTICAL SUMMARY TAB — a Nóra-féle végleges táblázatok, automatikusan
         with tab_summary:
             section_header("Cortical Projection Summary")
@@ -1099,18 +935,10 @@ if 'results' in st.session_state and st.session_state['results']:
             numerator_ids = [rid for rid in selected_region_ids if rid != base_id]
 
             if not numerator_ids:
-                if not selected_region_ids:
-                    st.info(
-                        "This summary is region-based, so it needs target regions "
-                        "(e.g. GPe, TRN) in the sidebar. For a run without target "
-                        "regions, the **Hemisphere** tab is the one with results."
-                    )
-                else:
-                    st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
+                st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
             else:
                 summary = build_cortical_summary(results, base_id, numerator_ids,
-                                                 _region_label, criteria_used,
-                                                 laterality=saved_laterality)
+                                                 _region_label, criteria_used)
                 tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
                 st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
                         f"Recorded in every downloaded file name (`{tag}`).")

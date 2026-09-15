@@ -9,7 +9,7 @@ import os
 BASE_DATA_DIR = os.environ.get(
     'PALYAKOVETO_DATA_DIR',
     'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/data_v2/'
-)
+ )
 
 ATLAS_PATH = os.environ.get(
     'ATLAS_PATH',

@@ -638,8 +638,12 @@ def results_to_dataframe(
             'soma_region': result.soma_region_name,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
-            # Határsejt-jelző: a 25 um-es voxelrács miatt bizonytalan besorolás.
-            'hemisphere_mode': result.laterality,
+            # A FUTTATÁS beállítása, nem a sejt tulajdonsága: minden sorban ugyanaz.
+            # Azért van benne, hogy a fájl dokumentálja magát. A név szándékosan
+            # hosszú: a korábbi 'hemisphere_mode' a sejtenkénti laterality_class
+            # oszlop mellett állt, és könnyen úgy lehetett olvasni, mintha az adott
+            # sejtről állítana valamit.
+            'run_hemisphere_setting': result.laterality,
             'soma_on_region_border': result.soma_is_border,
             'soma_border_fraction': round(result.soma_border_fraction, 2),
             # A végpont-arány nevezőjének átláthatósága: hány végpont esik
@@ -838,6 +842,35 @@ def build_laterality_summary(
         # a fenti metrikák némán elcsúsznának.
         'counts': {cls: len(ids) for cls, ids in counts.items()},
     }
+
+
+def category_slugs(labels: list[str]) -> dict[str, str]:
+    """
+    Kategória-címke -> fájlnévbe illeszthető, GARANTÁLTAN EGYEDI azonosító.
+
+    A rövid azonosító ötlete jó (kezelhető fájlnevek), de a puszta csonkolás
+    ütközést okozott: a "... only" utótag pont a levágott részbe esett, így az
+    INKLUZÍV és az EXKLUZÍV kategória ugyanazt a slugot kapta. Ennek két
+    következménye volt - a Streamlit duplikált kulcs hibája, és két azonos
+    nevű letöltött fájl (ez utóbbi némán, adatvesztés-szerűen).
+
+    Ezért az " only" utótagot a csonkolás UTÁN tesszük vissza, és a végén egy
+    dedup-kör garantálja az egyediséget arra az esetre is, ha két különböző
+    régió neve az első 24 karakteren megegyezne.
+    """
+    slugs: dict[str, str] = {}
+    used: set[str] = set()
+    for lab in labels:
+        is_only = lab.lower().endswith(' only')
+        base = lab[:-5] if is_only else lab
+        stem = ''.join(ch if ch.isalnum() else '_' for ch in base.lower())[:24].strip('_')
+        stem = f"{stem}_only" if is_only else stem
+        candidate, n = stem, 2
+        while candidate in used:
+            candidate, n = f"{stem}_{n}", n + 1
+        used.add(candidate)
+        slugs[lab] = candidate
+    return slugs
 
 
 def build_cortical_summary(

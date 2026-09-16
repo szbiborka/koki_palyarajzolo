@@ -21,7 +21,8 @@ from core.loader import (
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
-    build_cortical_summary, build_laterality_summary, LATERALITY_CLASS_LABELS
+    build_cortical_summary, build_laterality_summary, LATERALITY_CLASS_LABELS,
+    category_slugs
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
@@ -1147,8 +1148,11 @@ if 'results' in st.session_state and st.session_state['results']:
                     "category files (\"GPe + BS, de a TRN-be nem\"). "
                     "*only* + *only* + *All targets* + non-projectors = every PT cell."
                 )
+                # Egyedi slugok EGY helyen, a teljes címkelistából. Külön-külön
+                # csonkolva az inkluzív és az exkluzív tábla ugyanazt kapta volna.
+                cat_slugs = category_slugs(list(summary['categories'].keys()))
                 for lab, df in summary['categories'].items():
-                    safe = ''.join(ch if ch.isalnum() else '_' for ch in lab.lower())[:24]
+                    safe = cat_slugs[lab]
                     with st.expander(f"{lab}  ({int(df.iloc[:, 2].sum())} cells)"):
                         st.dataframe(df, use_container_width=True, hide_index=True)
                         st.download_button(

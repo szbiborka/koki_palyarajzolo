@@ -844,6 +844,35 @@ def build_laterality_summary(
     }
 
 
+def category_slugs(labels: list[str]) -> dict[str, str]:
+    """
+    Kategória-címke -> fájlnévbe illeszthető, GARANTÁLTAN EGYEDI azonosító.
+
+    A rövid azonosító ötlete jó (kezelhető fájlnevek), de a puszta csonkolás
+    ütközést okozott: a "... only" utótag pont a levágott részbe esett, így az
+    INKLUZÍV és az EXKLUZÍV kategória ugyanazt a slugot kapta. Ennek két
+    következménye volt - a Streamlit duplikált kulcs hibája, és két azonos
+    nevű letöltött fájl (ez utóbbi némán, adatvesztés-szerűen).
+
+    Ezért az " only" utótagot a csonkolás UTÁN tesszük vissza, és a végén egy
+    dedup-kör garantálja az egyediséget arra az esetre is, ha két különböző
+    régió neve az első 24 karakteren megegyezne.
+    """
+    slugs: dict[str, str] = {}
+    used: set[str] = set()
+    for lab in labels:
+        is_only = lab.lower().endswith(' only')
+        base = lab[:-5] if is_only else lab
+        stem = ''.join(ch if ch.isalnum() else '_' for ch in base.lower())[:24].strip('_')
+        stem = f"{stem}_only" if is_only else stem
+        candidate, n = stem, 2
+        while candidate in used:
+            candidate, n = f"{stem}_{n}", n + 1
+        used.add(candidate)
+        slugs[lab] = candidate
+    return slugs
+
+
 def build_cortical_summary(
         results: list[tuple[str, CellAnalysisResult]],
         base_region_id: int | None,

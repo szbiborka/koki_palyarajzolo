@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.analysis import (
     run_analysis, apply_filter, FilterCriteria,
     build_laterality_summary, LATERALITY_CLASS_LABELS,
+    category_slugs,
 )
 from config import CONTRA_CROSSING_MIN_AXON_UM
 
@@ -694,6 +695,35 @@ def test_undetermined_cells_are_excluded_from_laterality_percentages():
     assert pd.isna(by_soma.loc["No soma found", 'No contralateral %'])
 
 
+# ---------------------------------------------------------------------------
+# A kategória-slugok EGYEDIEK. A rövidítés a " only" utótagot pont levágta,
+# így az inkluzív és az exkluzív tábla ugyanazt az azonosítót kapta: a
+# Streamlit duplikált kulcsra panaszkodott, és két azonos nevű CSV töltődött
+# volna le. Az utóbbi a rosszabb, mert némán történt volna.
+# ---------------------------------------------------------------------------
+def test_category_slugs_are_unique():
+    labels = [
+        "Globus pallidus external segment",
+        "Globus pallidus external segment only",
+        "Reticular nucleus of the thalamus",
+        "Reticular nucleus of the thalamus only",
+        "All targets",
+    ]
+    slugs = category_slugs(labels)
+
+    assert len(set(slugs.values())) == len(labels), "minden kategória külön slugot kap"
+    # Az inkluzív és az exkluzív változat láthatóan különbözik, nem csak egy
+    # odabiggyesztett sorszámban.
+    assert slugs["Globus pallidus external segment only"].endswith("_only")
+    assert not slugs["Globus pallidus external segment"].endswith("_only")
+
+    # Akkor is egyedi marad, ha két KÜLÖNBÖZŐ régió neve az első 24 karakteren
+    # megegyezik - ilyenkor a dedup-kör sorszámoz.
+    tricky = ["Primary somatosensory area barrel field",
+              "Primary somatosensory area mouth"]
+    assert len(set(category_slugs(tricky).values())) == 2
+
+
 def test_exclusive_categories_match_the_original_three_files():
     """Nóra eredeti bontása: 'GPe + BS, de a TRN-be nem'."""
     from core.analysis import RegionResult, CellAnalysisResult, build_cortical_summary
@@ -744,5 +774,6 @@ if __name__ == "__main__":
     test_whole_cell_laterality_needs_no_target_region()
     test_crossing_without_endpoints_is_a_separate_category()
     test_undetermined_cells_are_excluded_from_laterality_percentages()
+    test_category_slugs_are_unique()
     test_exclusive_categories_match_the_original_three_files()
     print("All analysis regression tests passed.")

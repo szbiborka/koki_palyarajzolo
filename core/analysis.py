@@ -638,8 +638,12 @@ def results_to_dataframe(
             'soma_region': result.soma_region_name,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
-            # Határsejt-jelző: a 25 um-es voxelrács miatt bizonytalan besorolás.
-            'hemisphere_mode': result.laterality,
+            # A FUTTATÁS beállítása, nem a sejt tulajdonsága: minden sorban ugyanaz.
+            # Azért van benne, hogy a fájl dokumentálja magát. A név szándékosan
+            # hosszú: a korábbi 'hemisphere_mode' a sejtenkénti laterality_class
+            # oszlop mellett állt, és könnyen úgy lehetett olvasni, mintha az adott
+            # sejtről állítana valamit.
+            'run_hemisphere_setting': result.laterality,
             'soma_on_region_border': result.soma_is_border,
             'soma_border_fraction': round(result.soma_border_fraction, 2),
             # A végpont-arány nevezőjének átláthatósága: hány végpont esik

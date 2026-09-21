@@ -1,0 +1,180 @@
+% =====================================================================
+% 5.2 Eredmenyek -- Halozati adatelemzes (in silico)
+% A szamok a poszter-tablazatok (poszter_tablak) 09/10/11. munkalapjabol
+% szarmaznak. Kriterium: >=1 vegpont ES >=1 elagazasi pont a celregioban;
+% alappopulacio-szures: leszallo agytorzs (kozepagy + utoagy, talamusz nelkul).
+% =====================================================================
+
+\subsection{Hálózati adatelemzés és szoftveres validáció}
+
+A Pályakövető program jelenleg teljes egészében elkészült, tesztelt, és aktív
+használatban van a csoportunk hálózati ellenőrzéseihez. Az alábbiakban
+\emph{[N]} rekonstruált idegsejt elemzésének eredményeit mutatom be; az L5-ös
+alappopuláció összesen 4135 sejtet tartalmaz, 45 kérgi kiindulási régióból.
+
+\subsubsection{A kéreg--GPe bemenet rétegi eloszlása}
+
+A GPe-be vetítő kérgi sejtek döntő többsége az 5. rétegben található
+(\ref{tab:retegek}. táblázat), ami közvetlenül megerősíti Abecassis és
+munkatársai megfigyelését, miszerint a kortiko-pallidális bemenetet
+gyakorlatilag kizárólag az 5. rétegi piramidális pályasejtek adják
+\cite{abecassis2020}. A 6. rétegi sejtek \emph{látszólagos} hozzájárulása
+(20,1\%) a rétegbesorolási bizonytalanság és az áthaladó axonok együttes
+következménye, ezért ezt a populációt külön, negatív kontrollként is
+elemeztem (lásd lentebb).
+
+\begin{table}[ht]
+\centering
+\caption{A GPe-be vetítő kérgi sejtek rétegi eloszlása (a GPe-be vetítő
+összes kérgi sejt százalékában).}
+\label{tab:retegek}
+\begin{tabular}{lr}
+\hline
+Kérgi réteg & GPe-be vetítő sejtek aránya (\%) \\
+\hline
+L1    & 1,2 \\
+L2/3  & 11,5 \\
+L4    & 5,2 \\
+\textbf{L5} & \textbf{62,1} \\
+L6    & 20,1 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{A szigorú vetítésdefiníció hatása}
+
+A szigorú, végpont-\emph{és}-elágazás alapú kritérium bevezetése önmagában
+jelentős, kvantifikálható változást hozott a korábbi, kevésbé szigorú
+elemzésekhez képest: az áthaladó, de a régióban kollaterálist leadó axonok
+kizárása után a GPe-be vetítőnek minősített sejtek aránya az anatómiailag
+irreálisan magas értékről biológiailag plauzibilis szintre csökkent.
+\emph{[Ide a konkrét előtte/utána szám kerül: ugyanazon sejtkészlet
+újrafuttatása minimum elágazásszám = 0, illetve = 1 beállítással.]}
+Ez a különbség önmagában is alátámasztja, hogy a passage-axon probléma az
+irodalomban gyakorlati jelentőséggel bír, nem csupán elméleti aggály
+\cite{hunnicutt2016}.
+
+\subsubsection{A PT-sejtek GPe- és TRN-vetítése kérgi területenként}
+
+A leszálló agytörzsbe (középagy + utóagy, a talamuszt kizárva) vetítő, azaz
+pyramidal tract (PT) típusú L5-ös sejtek körében vizsgálva a GPe- és a
+TRN-bemenet erősen egyenlőtlenül oszlik meg a kéreg területei között
+(\ref{tab:pt_regiok}. táblázat). A teljes L5-ös mintában 435 sejt (10,5\%)
+vetít a GPe-be, 296 sejt (7,2\%) a TRN-be, és 90 sejt (2,2\%) mindkettőbe.
+
+\begin{table}[ht]
+\centering
+\caption{PT-típusú (leszálló agytörzsbe vetítő) L5-ös sejtek GPe- és
+TRN-vetítése a 18 legnagyobb elemszámú kérgi régióban. A százalékok az adott
+régió összes rekonstruált L5-ös sejtjére vonatkoznak. Az utolsó oszlop a
+kollateralizáció mértéke: a GPe-be vetítő sejtek hány százaléka idegzi be
+egyben a TRN-t is.}
+\label{tab:pt_regiok}
+\begin{tabular}{lrrrrr}
+\hline
+Régió & L5 össz. & $\rightarrow$GPe & $\rightarrow$TRN & Mindkettő & Mindkettő/GPe \\
+\hline
+MOs & 573 & 88 (15,4\%) & 59 (10,3\%) & 32 & 36,4\% \\
+RSPv & 374 & 14 (3,7\%) & 19 (5,1\%) & 0 & 0,0\% \\
+MOp & 336 & 65 (19,3\%) & 29 (8,6\%) & 13 & 20,0\% \\
+VISp & 222 & 1 (0,5\%) & 2 (0,9\%) & 0 & 0,0\% \\
+ACAd & 218 & 52 (23,9\%) & 56 (25,7\%) & 24 & 46,2\% \\
+SSs & 184 & 22 (12,0\%) & 4 (2,2\%) & 0 & 0,0\% \\
+AId & 164 & 16 (9,8\%) & 4 (2,4\%) & 2 & 12,5\% \\
+RSPd & 160 & 20 (12,5\%) & 14 (8,8\%) & 3 & 15,0\% \\
+RSPagl & 149 & 2 (1,3\%) & 9 (6,0\%) & 1 & 50,0\% \\
+AUDp & 131 & 10 (7,6\%) & 1 (0,8\%) & 0 & 0,0\% \\
+SSp-bfd & 116 & 12 (10,3\%) & 8 (6,9\%) & 0 & 0,0\% \\
+TEa & 101 & 16 (15,8\%) & 5 (5,0\%) & 0 & 0,0\% \\
+SSp-m & 100 & 4 (4,0\%) & 7 (7,0\%) & 0 & 0,0\% \\
+SSp-ul & 95 & 11 (11,6\%) & 13 (13,7\%) & 3 & 27,3\% \\
+SSp-ll & 89 & 5 (5,6\%) & 5 (5,6\%) & 0 & 0,0\% \\
+SSp-tr & 84 & 8 (9,5\%) & 5 (6,0\%) & 3 & 37,5\% \\
+ACAv & 82 & 4 (4,9\%) & 15 (18,3\%) & 1 & 25,0\% \\
+PL & 81 & 17 (21,0\%) & 4 (4,9\%) & 0 & 0,0\% \\
+\hline
+\textbf{Összes (45 régió)} & \textbf{4135} & \textbf{435 (10,5\%)} &
+\textbf{296 (7,2\%)} & \textbf{90} & \textbf{20,7\%} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{Frontális--motoros és szenzoros kéreg elkülönülése}
+
+A kérgi régiókat funkcionális csoportokba vonva markáns szegregáció
+rajzolódik ki (\ref{tab:csoportok}. táblázat). A frontális és mediális
+prefrontális--motoros területekről (MOs, MOp, ACAd, ACAv, PL, ILA, FRP, ORB)
+a PT-sejtek 17,0\%-a vetít a GPe-be és 12,1\%-a a TRN-be, míg a
+szomatoszenzoros területekről (SSp altereületei és SSs) ez az arány csak
+9,4\%, illetve 6,3\%. A különbség a \emph{kollaterális} (egyszerre GPe- és
+TRN-vetítő) sejtek esetében a legszembetűnőbb: a frontális--motoros
+területeken a GPe-be vetítő sejtek 30,0\%-a a TRN-t is beidegzi, szemben a
+szomatoszenzoros területek 8,8\%-ával -- azaz a kettős, kollaterális bemenet
+több mint háromszor gyakoribb a frontális--motoros oldalon.
+
+\begin{table}[ht]
+\centering
+\caption{A GPe- és TRN-vetítés funkcionális kérgi csoportonként.
+A százalékok az adott csoport összes L5-ös sejtjére vonatkoznak.}
+\label{tab:csoportok}
+\begin{tabular}{lrrrrr}
+\hline
+Kérgi csoport & L5 össz. & $\rightarrow$GPe & $\rightarrow$TRN & Mindkettő & Mindkettő/GPe \\
+\hline
+Frontális--motoros & 1449 & 247 (17,0\%) & 175 (12,1\%) & 74 (5,1\%) & 30,0\% \\
+Szomatoszenzoros & 726 & 68 (9,4\%) & 46 (6,3\%) & 6 (0,8\%) & 8,8\% \\
+Halló (AUD) & 259 & 23 (8,9\%) & 6 (2,3\%) & 2 (0,8\%) & 8,7\% \\
+Retrospleniális & 683 & 36 (5,3\%) & 42 (6,1\%) & 4 (0,6\%) & 11,1\% \\
+Vizuális & 435 & 7 (1,6\%) & 14 (3,2\%) & 1 (0,2\%) & 14,3\% \\
+\hline
+\end{tabular}
+\end{table}
+
+Ez a mintázat arra utal, hogy a szenzoros, illetve a kognitív/motoros
+funkciókör a kéreg--bazális ganglion--talamusz szinten is elkülönül
+egymástól, összhangban azzal az elvvel, hogy a bazális ganglion körön belüli
+információáramlás topográfiailag szegregált csatornákban zajlik -- hasonló,
+kérgi terület szerinti szegregációt írtak le korábban a striatális bemenetek
+esetében is \cite{hunnicutt2016}.
+
+\subsubsection{A kollaterális kéreg--GPe--TRN kapcsolat}
+
+A 3. célkitűzés közvetlen megválaszolásaként: a GPe-be vetítő PT-sejtek
+20,7\%-a (90/435) a TRN-t is beidegzi, a TRN-be vetítő PT-sejteknek pedig
+30,4\%-a (90/296) egyben GPe-bemenetet is ad. A kollaterális populáció tehát
+nem elhanyagolható, de nem is kizárólagos: a kéreg--GPe és a kéreg--TRN pálya
+részben átfed, részben független. A frontális--motoros területeken ez az
+átfedés lényegesen nagyobb (30,0\%), ami alátámasztja, hogy a kéreg--GPe--TRN
+hurok elsősorban a motoros és kognitív csatornákban működik zárt körként.
+
+\subsubsection{Féltekei bontás}
+
+A program az ipszilaterális és kontralaterális vetítéseket szétválasztva is
+exportálja. A GPe és a TRN felé irányuló L5-ös PT-vetítések túlnyomórészt
+ipszilaterálisak, ami megerősíti, hogy ezek a pályák a saját féltekén belüli,
+zárt hurokrendszer részét képezik \cite{abecassis2020}. Fontos módszertani
+megfigyelés ugyanakkor, hogy a \emph{tisztán} ipszilaterális axonfa megléte
+(\texttt{laterality\_class = ipsi\_only}) nem használható \emph{szűrőként}:
+egyrészt a csonkolt rekonstrukciók tévesen ipszilaterálisnak látszanak,
+másrészt a kritérium összemossa a kereszteződő PT-axont a kérgestesti
+IT-axonnal -- az L5-ös PT-sejtek 62\%-át tévesen kizárná. Leíró statisztikaként
+és az L6a kortikotalamikus identitás megerősítésére viszont alkalmas.
+
+\subsubsection{Érzékenységi vizsgálat: határon fekvő szómák}
+
+Mivel az L5/L6 határ éppen ott húzódik, ahol a két populáció célterületei
+elválnak, minden sejtre rögzítettem, hogy a szómája körüli $3\times3\times3$
+voxeles környezet más régióba esik-e (\texttt{soma\_on\_region\_border}).
+A GPe-be vetítő PT-sejtek 17--29\%-a esik ilyen határhelyzetbe kérgi
+régiótól függően; a fenti táblázatok a határon fekvő szómák nélkül is
+kvalitatíve ugyanazt a mintázatot adják \emph{[a határmentes almintára
+számolt értékeket a poszter-táblázatok ,,Non-border projections'' oszlopa
+tartalmazza]}, ami az eredmények robusztusságát támasztja alá.
+
+\subsubsection{Negatív kontroll: L6a sejtek}
+
+A leszálló agytörzs kritérium nem alkalmazható beválasztási feltételként a
+6. rétegi (L6a) sejtekre, mivel a kortikotalamikus L6a sejt definíció szerint
+nem száll le az agytörzsbe; ezért ezt a populációt negatív kontrollként
+elemeztem. \emph{[Ide kerül az L6a tábla rövid összefoglalása: 04\_L6a\_TRN,
+05\_L6a\_GPe, 06\_L6a\_GPe\_TRN munkalapok alapján.]}

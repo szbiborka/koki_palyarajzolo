@@ -3,23 +3,15 @@
 
 import os
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.path.join(PROJECT_DIR, 'adatfajlok')
+
 # --- Adatfájlok útvonalai ---
-# Ezek az útvonalak a saját gépen érvényesek. Szerveren felülírhatók
+# Alapértelmezés: a projektmappán belüli 'adatfajlok/'. Szerveren felülírhatók
 # környezeti változókkal (pl. export ATLAS_PATH=/data/atlas/annotation_25.nrrd)
-BASE_DATA_DIR = os.environ.get(
-    'PALYAKOVETO_DATA_DIR',
-    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/data_v2/'
- )
-
-ATLAS_PATH = os.environ.get(
-    'ATLAS_PATH',
-    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/annotation_25.nrrd'
-)
-
-DICTIONARY_PATH = os.environ.get(
-    'DICTIONARY_PATH',
-    'C:/Users/szabo.biborka/koki_palyarajzolo/adatfajlok/query.csv'
-)
+BASE_DATA_DIR = os.environ.get('PALYAKOVETO_DATA_DIR', os.path.join(_DATA_DIR, 'data_v2'))
+ATLAS_PATH = os.environ.get('ATLAS_PATH', os.path.join(_DATA_DIR, 'annotation_25.nrrd'))
+DICTIONARY_PATH = os.environ.get('DICTIONARY_PATH', os.path.join(_DATA_DIR, 'query.csv'))
 
 # --- Soma index fájl ---
 # Ez a fájl tárolja el az összes SWC fájl soma-régió megfeleltetését.
@@ -27,7 +19,7 @@ DICTIONARY_PATH = os.environ.get(
 # Ha új SWC fájlok kerülnek a mappába, a UI-ban lévő "Rebuild index" gombbal frissíthető.
 SOMA_INDEX_PATH = os.environ.get(
     'SOMA_INDEX_PATH',
-    os.path.join(os.path.dirname(__file__), 'soma_index.csv')
+    os.path.join(PROJECT_DIR, 'soma_index.csv')
 )
 
 # --- Atlas paraméterek ---
@@ -118,10 +110,6 @@ DEFAULT_FILTER = {
 }
 
 # --- Vizualizációs beállítások ---
-VIZ_REGION_OPACITY = 0.25        # Agyterület felszínek átlátszósága
-VIZ_SOMA_RADIUS = 15             # Soma gömb sugara mikrométerben
-VIZ_POINT_SIZE = 10              # Vetítési pontok mérete
-VIZ_AXON_LINE_WIDTH = 2          # Axon vonalak vastagsága
 VIZ_MARCHING_CUBES_STEP = 2      # Felszín-generálás lépésköze (kisebb = szebb, de lassabb)
 
 # --- 3D JELENET TÉMÁK ---
@@ -201,11 +189,3 @@ DEFAULT_VIZ_THEME = 'dark'
 # (atlas > 0), így akkor is működik, ha a "root" régió nincs a szótárban.
 # A nagyobb lépésköz azért kell, mert ez a legnagyobb felület a jelenetben.
 VIZ_BRAIN_OUTLINE_STEP = 6
-
-# --- Visszafelé kompatibilis szín-hozzáférés (a régi kód ezt használja) ---
-COLORS = {
-    'soma': VIZ_THEMES[DEFAULT_VIZ_THEME]['soma'],
-    'axon_default': VIZ_THEMES[DEFAULT_VIZ_THEME]['axon_default'],
-    'region_default': '#AAAAAA',
-    'region_palette': VIZ_THEMES[DEFAULT_VIZ_THEME]['region_palette'],
-}

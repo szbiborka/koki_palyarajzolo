@@ -3,9 +3,15 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.venv/
 
 # Generated data
 soma_index.csv
 
+# Local data (atlas, dictionary, SWC files) - too large for git
+adatfajlok/
+
 # Editor / OS
+.idea/
+.junie/
 .DS_Store

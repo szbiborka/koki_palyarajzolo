@@ -2,10 +2,11 @@
 
 import numpy as np
 import plotly.graph_objects as go
+import streamlit as st
 from skimage.measure import marching_cubes
 
 from config import (
-    VOXEL_SIZE, VIZ_REGION_OPACITY, VIZ_MARCHING_CUBES_STEP, COLORS,
+    VOXEL_SIZE, VIZ_MARCHING_CUBES_STEP,
     VIZ_THEMES, DEFAULT_VIZ_THEME, VIZ_BRAIN_OUTLINE_STEP
 )
 from core.analysis import CellAnalysisResult
@@ -18,26 +19,35 @@ def get_theme(theme: str | dict | None = None) -> dict:
     return VIZ_THEMES.get(theme or DEFAULT_VIZ_THEME, VIZ_THEMES[DEFAULT_VIZ_THEME])
 
 
-def _get_region_color(region_index: int, theme: dict | None = None) -> str:
-    palette = (theme or get_theme())['region_palette'] if theme else COLORS['region_palette']
+def _get_region_color(region_index: int, theme: dict) -> str:
+    palette = theme['region_palette']
     return palette[region_index % len(palette)]
+
+
+@st.cache_resource(show_spinner="Building brain outline... (this only happens once)")
+def _brain_outline_geometry(_atlas_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """
+    A teljes agy felszínének (verts µm-ben, faces) geometriája, egyszer kiszámolva.
+    Az ÖSSZES annotált voxelt vesszük (atlas > 0), így nem függünk a "root"
+    régió ID-jától. (Az aláhúzásos paramétert a Streamlit nem hash-eli; az
+    alkalmazásban egyetlen atlasz van.)
+    """
+    mask = _atlas_matrix > 0
+    if not np.any(mask):
+        return None
+    verts, faces, _, _ = marching_cubes(mask, level=0.5, step_size=VIZ_BRAIN_OUTLINE_STEP)
+    return verts * VOXEL_SIZE, faces
 
 
 def _build_brain_outline(atlas_matrix: np.ndarray, theme: dict) -> go.Mesh3d | None:
     """
     A teljes agy külső felszíne, nagyon áttetszően - térbeli tájékozódáshoz.
-
-    Enélkül a sejt a semmiben lebeg: nem látszik, hol van az agyban, melyik
-    félteke, mennyire halad előre/hátra. Az ÖSSZES annotált voxelt vesszük
-    (atlas > 0), így nem függünk a "root" régió ID-jától. Nagyobb marching-cubes
-    lépésköz, mert ez a legnagyobb felület - a körvonalnak nem kell részletesnek
-    lennie, csak elhelyeznie a sejtet.
+    Enélkül a sejt a semmiben lebeg: nem látszik, hol van az agyban.
     """
-    mask = atlas_matrix > 0
-    if not np.any(mask):
+    geometry = _brain_outline_geometry(atlas_matrix)
+    if geometry is None:
         return None
-    verts, faces, _, _ = marching_cubes(mask, level=0.5, step_size=VIZ_BRAIN_OUTLINE_STEP)
-    verts = verts * VOXEL_SIZE
+    verts, faces = geometry
     return go.Mesh3d(
         x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
         i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
@@ -50,15 +60,15 @@ def _build_brain_outline(atlas_matrix: np.ndarray, theme: dict) -> go.Mesh3d | N
     )
 
 
-def _build_mesh_trace(mask: np.ndarray, color: str, opacity: float, name: str,
-                      showlegend: bool = True) -> go.Mesh3d | None:
-    if not np.any(mask): return None
+def _build_mesh_trace(mask: np.ndarray, color: str, opacity: float, name: str) -> go.Mesh3d | None:
+    if not np.any(mask):
+        return None
     verts, faces, _, _ = marching_cubes(mask, level=0.5, step_size=VIZ_MARCHING_CUBES_STEP)
     verts = verts * VOXEL_SIZE
     return go.Mesh3d(
         x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
         i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-        color=color, opacity=opacity, name=name, showlegend=showlegend,
+        color=color, opacity=opacity, name=name, showlegend=True,
         lighting=dict(ambient=0.5, diffuse=0.8, specular=0.2, roughness=0.5),
         lightposition=dict(x=100, y=200, z=150), hoverinfo='name',
     )
@@ -66,72 +76,71 @@ def _build_mesh_trace(mask: np.ndarray, color: str, opacity: float, name: str,
 
 def _build_axon_trace(
         x: np.ndarray, y: np.ndarray, z: np.ndarray,
-        curr_idx: np.ndarray, parent_row_indices: np.ndarray,
+        child_rows: np.ndarray, parent_rows: np.ndarray,
         is_axon: np.ndarray, point_regions: np.ndarray,
         region_color_map: dict[int, str], line_width: int = 2,
         allowed_regions: set | None = None,
-        downsample_factor: int = 1,  # ÚJ PARAMÉTER: Pontok ritkítása
+        downsample_factor: int = 1,
         theme: dict | None = None
 ) -> list[go.Scatter3d]:
+    """
+    Az axonszakaszok színenként egy-egy vonal-rétegben (None-nal elválasztva),
+    a gyermek-csomópont régiója szerint színezve.
+
+    Args:
+        allowed_regions: ha meg van adva, csak az ezekben futó szakaszok
+            ("Axon-in-region" nézet)
+        downsample_factor: csak minden N-edik szakasz (sok sejt együttes nézetéhez)
+    """
     # A célterületen kívüli axon a téma "halvány" színét kapja: jelen van a
     # kontextus kedvéért, de nem versenyez a színnel jelölt célterületekkel.
     default_axon = (theme or get_theme())['axon_default']
     segments_by_color: dict[str, tuple[list, list, list]] = {}
 
-    for count, i in enumerate(curr_idx):
-        if not is_axon[i]: continue
-
-        # RITKÍTÁS LOGIKA: Ha a faktor > 1, csak minden N-edik szakaszt tartjuk meg
+    for count, (i, p_row) in enumerate(zip(child_rows, parent_rows)):
+        if not is_axon[i]:
+            continue
         if downsample_factor > 1 and count % downsample_factor != 0:
             continue
-
-        # EXCLUSIVE LOGIKA: Eldobjuk a régiót, ha nincs az engedélyezett listában
         region_int = int(point_regions[i])
         if allowed_regions is not None and region_int not in allowed_regions:
             continue
 
         color = region_color_map.get(region_int, default_axon)
-        p_row = parent_row_indices[i]
-
-        if color not in segments_by_color:
-            segments_by_color[color] = ([], [], [])
-
-        xs, ys, zs = segments_by_color[color]
-
-        # A NaN (None) elválasztók miatt a Plotly egyetlen rétegként (trace) kezeli
-        # a megszakított vonalakat is, ami lehetővé teszi az egykattintásos ki/be kapcsolást!
+        xs, ys, zs = segments_by_color.setdefault(color, ([], [], []))
         xs.extend([x[i], x[p_row], None])
         ys.extend([y[i], y[p_row], None])
         zs.extend([z[i], z[p_row], None])
 
-    traces = []
-    for color, (xs, ys, zs) in segments_by_color.items():
-        traces.append(go.Scatter3d(
-            x=xs, y=ys, z=zs, mode='lines', line=dict(color=color, width=line_width),
-            hoverinfo='skip', showlegend=False,
-        ))
-    return traces
-
-
-def _region_mask(atlas_matrix: np.ndarray, region_id: int,
-                 region_descendants: dict[int, set[int]] | None) -> np.ndarray:
-    """
-    Egy régió voxel-maszkja, a SZÜLŐ régiókat is beleértve.
-
-    Az annotációs térfogat csak a levél-régiókat címkézi, ezért egy szülő (pl.
-    "Brain stem") vagy a virtuális "leszálló agytörzs" ID-ja önmagában 0 voxelt
-    fedne - nem rajzolódna ki felület. A leszármazottakra feloldva viszont igen.
-    """
-    ids = (region_descendants or {}).get(int(region_id))
-    if ids:
-        return np.isin(atlas_matrix, np.fromiter((int(v) for v in ids), dtype=int))
-    return atlas_matrix == region_id
+    return [
+        go.Scatter3d(x=xs, y=ys, z=zs, mode='lines', line=dict(color=color, width=line_width),
+                     hoverinfo='skip', showlegend=False)
+        for color, (xs, ys, zs) in segments_by_color.items()
+    ]
 
 
 def _expand_ids(region_id: int, region_descendants: dict[int, set[int]] | None) -> set[int]:
     """A régióhoz tartozó összes atlasz-ID (önmaga + leszármazottai)."""
     ids = (region_descendants or {}).get(int(region_id))
     return set(int(v) for v in ids) if ids else {int(region_id)}
+
+
+def _region_mask(atlas_matrix: np.ndarray, region_id: int,
+                 region_descendants: dict[int, set[int]] | None) -> np.ndarray:
+    """
+    Egy régió voxel-maszkja, a SZÜLŐ régiókat is beleértve. Az annotációs
+    térfogat csak a levél-régiókat címkézi, ezért egy szülő (pl. "Brain stem")
+    ID-ja önmagában 0 voxelt fedne - nem rajzolódna ki felület.
+    """
+    return np.isin(atlas_matrix, np.fromiter(_expand_ids(region_id, region_descendants), dtype=int))
+
+
+def _allowed_regions(target_region_ids, region_descendants, soma_region_id: int) -> set[int]:
+    """Az "Axon-in-region" nézetben megtartott régiók: a célterületek (leszármazottakkal) + a soma régiója."""
+    allowed = {soma_region_id}
+    for rid in target_region_ids:
+        allowed |= _expand_ids(rid, region_descendants)
+    return allowed
 
 
 def build_3d_plot(
@@ -144,21 +153,18 @@ def build_3d_plot(
 ) -> go.Figure:
     th = get_theme(theme)
     coords = result.coords
-    x, y, z, is_axon, point_regions = coords['x'], coords['y'], coords['z'], coords['is_axon'], coords['point_regions']
-    proj_idx, curr_idx, parent_row_indices, soma_idx = coords['proj_idx'], coords['curr_idx'], coords[
-        'parent_row_indices'], coords['soma_idx']
+    x, y, z = coords['x'], coords['y'], coords['z']
+    point_regions, proj_idx, soma_idx = coords['point_regions'], coords['proj_idx'], coords['soma_idx']
 
     # A színtérkép a TÉNYLEGES atlasz-ID-kra épül: egy szülő régió minden
     # leszármazott magja ugyanazt a színt kapja, különben az ottani axonok
     # szürkék maradnának (a csomópontok levél-ID-t hordoznak, nem a szülőét).
     region_color_map: dict[int, str] = {}
     for i, tr in enumerate(result.target_results):
-        color = _get_region_color(i, th)
         for rid in _expand_ids(tr.region_id, region_descendants):
-            region_color_map[rid] = color
+            region_color_map[rid] = _get_region_color(i, th)
     traces: list = []
 
-    # Az agy körvonala legelöl, hogy a többi réteg fölé rajzolódjon rá.
     if show_brain_outline:
         if t := _build_brain_outline(atlas_matrix, th):
             traces.append(t)
@@ -167,15 +173,13 @@ def build_3d_plot(
         # A soma-régió KONTEXTUS (gyakran nagy kérgi terület), ezért halványabb a
         # célterületeknél - különben elnyomná azokat és az axont is.
         if t := _build_mesh_trace(atlas_matrix == result.soma_region_id, '#c0392b',
-                                  th['region_opacity'] * 0.55,
-                                  f'Soma: {result.soma_region_name}'):
+                                  th['region_opacity'] * 0.55, f'Soma: {result.soma_region_name}'):
             traces.append(t)
 
     for i, tr in enumerate(result.target_results):
-        proj_symbol = '✓' if tr.projects_here else '✗'
+        symbol = '✓' if tr.projects_here else '✗'
         if t := _build_mesh_trace(_region_mask(atlas_matrix, tr.region_id, region_descendants),
-                                  _get_region_color(i, th), th['region_opacity'],
-                                  f'{proj_symbol} {tr.region_name}'):
+                                  _get_region_color(i, th), th['region_opacity'], f'{symbol} {tr.region_name}'):
             traces.append(t)
 
     if show_other_regions:
@@ -186,43 +190,35 @@ def build_3d_plot(
                                       f'(other) {other.region_name}'):
                 traces.append(t)
 
-    allowed_regions = None
+    allowed = None
     if show_only_target_regions:
-        # Szülő régióknál a leszármazottakat is engedni kell, különben az ott
-        # futó axonok teljesen eltűnnének az "Axon-in-region" nézetből.
-        allowed_regions = set()
-        for tr in result.target_results:
-            allowed_regions |= _expand_ids(tr.region_id, region_descendants)
-        allowed_regions.add(result.soma_region_id)
+        allowed = _allowed_regions([tr.region_id for tr in result.target_results],
+                                   region_descendants, result.soma_region_id)
 
-    # Szóló sejtnél nincs szükség ritkításra (downsample_factor = 1)
-    traces.extend(_build_axon_trace(x, y, z, curr_idx, parent_row_indices, is_axon, point_regions,
-                                    region_color_map, th['axon_width'],
-                                    allowed_regions, downsample_factor=1, theme=th))
+    traces.extend(_build_axon_trace(x, y, z, coords['child_rows'], coords['parent_rows'], coords['is_axon'],
+                                    point_regions, region_color_map, th['axon_width'], allowed, theme=th))
 
     if soma_idx is not None:
         traces.append(go.Scatter3d(
             x=[x[soma_idx]], y=[y[soma_idx]], z=[z[soma_idx]], mode='markers',
-            marker=dict(size=8, color=th['soma'], symbol='circle',
-                        line=dict(color=th['paper_bg'], width=1)), name='Soma',
-            hovertext=f'Soma<br>{result.soma_region_name}', hoverinfo='text',
+            marker=dict(size=8, color=th['soma'], symbol='circle', line=dict(color=th['paper_bg'], width=1)),
+            name='Soma', hovertext=f'Soma<br>{result.soma_region_name}', hoverinfo='text',
         ))
 
     for i, tr in enumerate(result.target_results):
         match = np.fromiter(_expand_ids(tr.region_id, region_descendants), dtype=int)
-        if len(pts := proj_idx[np.isin(point_regions[proj_idx], match)]) > 0:
+        pts = proj_idx[np.isin(point_regions[proj_idx], match)]
+        if len(pts) > 0:
             traces.append(go.Scatter3d(
                 x=x[pts], y=y[pts], z=z[pts], mode='markers',
                 marker=dict(size=5, color=_get_region_color(i, th), symbol='diamond',
                             line=dict(color=th['paper_bg'], width=0.5)),
-                name=f'Proj. pts: {tr.region_name}', hovertext=[f'{tr.region_name}<br>ep/branch' for _ in pts],
+                name=f'Proj. pts: {tr.region_name}', hovertext=f'{tr.region_name}<br>ep/branch',
                 hoverinfo='text',
             ))
 
     fig = go.Figure(data=traces)
-    _apply_scene_layout(
-        fig, th, height=650,
-        title=f'<b>{cell_name}</b>  |  Soma: {result.soma_region_name}')
+    _apply_scene_layout(fig, th, height=650, title=f'<b>{cell_name}</b>  |  Soma: {result.soma_region_name}')
     return fig
 
 
@@ -255,11 +251,11 @@ def build_3d_plot_multi(
         theme: str | dict | None = None,
         show_brain_outline: bool = True
 ) -> go.Figure:
+    """Több sejt együttes nézete: minden sejt saját színt kap (axon + soma)."""
     th = get_theme(theme)
     palette, traces = th['region_palette'], []
     region_names = {tr.region_id: tr.region_name for tr in results[0][1].target_results} if results else {}
 
-    # Agy körvonal a térbeli tájékozódáshoz (lásd build_3d_plot).
     if show_brain_outline:
         if t := _build_brain_outline(atlas_matrix, th):
             traces.append(t)
@@ -276,40 +272,30 @@ def build_3d_plot_multi(
         coords = result.coords
         uniform_color_map = {int(rid): cell_color for rid in np.unique(coords['point_regions'])}
 
-        allowed_regions = None
+        allowed = None
         if show_only_target_regions:
-            # Szülő régiók leszármazottait is engedni kell (lásd build_3d_plot).
-            allowed_regions = set()
-            for rid in target_region_ids:
-                allowed_regions |= _expand_ids(rid, region_descendants)
-            allowed_regions.add(result.soma_region_id)
+            allowed = _allowed_regions(target_region_ids, region_descendants, result.soma_region_id)
 
-        # RITKÍTÁS ALKALMAZÁSA: downsample_factor=3 drasztikusan csökkenti a memóriaterhelést
+        # Ritkítás (minden 3. szakasz): sok sejtnél drasztikusan csökkenti a böngésző terhelését.
         axon_traces = _build_axon_trace(
-            coords['x'], coords['y'], coords['z'], coords['curr_idx'], coords['parent_row_indices'],
-            coords['is_axon'], coords['point_regions'], uniform_color_map, 1, allowed_regions,
+            coords['x'], coords['y'], coords['z'], coords['child_rows'], coords['parent_rows'],
+            coords['is_axon'], coords['point_regions'], uniform_color_map, 1, allowed,
             downsample_factor=3, theme=th
         )
         for j, tr in enumerate(axon_traces):
-            if j == 0: tr.showlegend, tr.name = True, cell_name
+            if j == 0:
+                tr.showlegend, tr.name = True, cell_name
             traces.append(tr)
 
-        if coords['soma_idx'] is not None:
+        soma_idx = coords['soma_idx']
+        if soma_idx is not None:
             traces.append(go.Scatter3d(
-                x=[coords['x'][coords['soma_idx']]], y=[coords['y'][coords['soma_idx']]],
-                z=[coords['z'][coords['soma_idx']]],
+                x=[coords['x'][soma_idx]], y=[coords['y'][soma_idx]], z=[coords['z'][soma_idx]],
                 mode='markers',
-                marker=dict(size=7, color=cell_color, symbol='circle',
-                            line=dict(color=th['paper_bg'], width=1)),
+                marker=dict(size=7, color=cell_color, symbol='circle', line=dict(color=th['paper_bg'], width=1)),
                 showlegend=False, hovertext=f'{cell_name}<br>Soma: {result.soma_region_name}', hoverinfo='text',
             ))
 
     fig = go.Figure(data=traces)
-    _apply_scene_layout(fig, th, height=700,
-                        title=f'<b>Combined view</b>  —  {len(results)} cells')
+    _apply_scene_layout(fig, th, height=700, title=f'<b>Combined view</b>  —  {len(results)} cells')
     return fig
-
-
-def render_plot_streamlit(fig: go.Figure, key: str) -> None:
-    import streamlit as st
-    st.plotly_chart(fig, use_container_width=True, key=key)

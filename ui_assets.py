@@ -108,16 +108,16 @@ def setup_css():
             letter-spacing: 0.05em !important; text-transform: uppercase; font-size: 0.85rem !important;
             transition: all 0.25s ease !important; padding: 0.5rem 1.5rem !important;
         }
-        [data-testid="baseButton-primary"] {
+        [data-testid="stBaseButton-primary"] {
             background: linear-gradient(135deg, var(--rosewood), var(--rosewood-light)) !important;
             border: none !important; color: #FFFFFF !important; box-shadow: 0 4px 10px rgba(138, 79, 79, 0.3) !important;
         }
-        [data-testid="baseButton-primary"]:hover {
+        [data-testid="stBaseButton-primary"]:hover {
             transform: translateY(-2px); box-shadow: 0 6px 15px rgba(138, 79, 79, 0.4) !important;
             background: linear-gradient(135deg, var(--rosewood-deep), var(--rosewood)) !important;
         }
-        [data-testid="baseButton-secondary"] { border: 1px solid var(--border-sage) !important; color: var(--sage-deep) !important; background-color: transparent !important; }
-        [data-testid="baseButton-secondary"]:hover { border-color: var(--sage) !important; background-color: var(--sage-tint) !important; }
+        [data-testid="stBaseButton-secondary"] { border: 1px solid var(--border-sage) !important; color: var(--sage-deep) !important; background-color: transparent !important; }
+        [data-testid="stBaseButton-secondary"]:hover { border-color: var(--sage) !important; background-color: var(--sage-tint) !important; }
 
         [data-testid="stTabs"] button { font-weight: 700; color: var(--taupe); letter-spacing: 0.02em; padding-bottom: 0.8rem; }
         [data-testid="stTabs"] button[aria-selected="true"] { color: var(--sage-deep); border-bottom-color: var(--neural-highlight); border-bottom-width: 3px; }

@@ -1,7 +1,4 @@
 # APP.PY - Streamlit Application Entry Point
-# Contains ONLY UI elements. No scientific logic is executed here.
-# Run with: streamlit run app.py
-
 import os
 import streamlit as st
 import pandas as pd
@@ -22,13 +19,15 @@ from core.loader import (
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria,
     build_cortical_summary, build_laterality_summary, LATERALITY_CLASS_LABELS,
-    category_slugs
+    category_slugs, build_soma_distribution_summary
 )
 from core.visualization import (
     build_3d_plot, build_3d_plot_multi, render_plot_streamlit
 )
 
-# PAGE CONFIGURATION & CSS
+# ÚJ IMPORT A DIZÁJN FÁJLBÓL
+from ui_assets import setup_css, NEURON_MARK, SYNAPSE_MARK, section_header
+
 st.set_page_config(
     page_title="Palyakoveto — Neuron Projection Analyzer",
     page_icon="🧠",
@@ -36,294 +35,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
-<style>
-    :root {
-        /* Alapszínek (Organikus zsálya és rózsafa vonal megtartva) */
-        --cream: #FAF9F6;           /* Lágyabb, melegebb háttér */
-        --sage-tint: #EBEFDF;       
-        --border-sage: #C7D1B5;     
-        --sage-light: #A4B595;
-        --sage: #6B8059;
-        --sage-deep: #3A4A28;
+# DIZÁJN INJEKTÁLÁSA
+setup_css()
 
-        /* Új kiegészítő színek: Fáradt mályva és púder */
-        --rosewood-tint: #F7EAE8;
-        --rosewood-light: #D4A39F;
-        --rosewood: #8A4F4F;
-        --rosewood-deep: #542D2D;
-
-        /* Klaszikus elegancia (szépia/taupe) */
-        --taupe: #948F7F;
-        --taupe-tint: #F2F0EB;
-        --taupe-deep: #5E5A4A;
-
-        /* High-tech neurális hálózat akcentus */
-        --neural-highlight: #D96C75; /* Élénkebb, "szinapszis-tüzelés" szín */
-
-        /* UI Formák */
-        --border-radius-soft: 16px;  /* Lágy, sejtszerű kerekítések */
-        --border-radius-pill: 24px;
-    }
-
-    html, body, [class*="css"] {
-        font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
-    }
-
-    /* --- Háttér és Oldalsáv (Sidebar) --- */
-    .stApp { 
-        background-color: var(--cream); 
-        /* Diszkrét, klasszikus Cajal-jellegű háttérminta (opcionális, nagyon halvány) */
-        background-image: radial-gradient(var(--taupe-tint) 1px, transparent 1px);
-        background-size: 20px 20px;
-    }
-
-    [data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child {
-        background-color: var(--sage-tint);
-        border-right: 1px dashed var(--border-sage);
-        box-shadow: 2px 0 10px rgba(0,0,0,0.02);
-    }
-
-    /* --- Tipográfia és Címsorok --- */
-    .sidebar-title {
-        font-size: 1.35rem;
-        font-weight: 800;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--sage-deep);
-        margin-bottom: 0.2rem;
-        display: flex;
-        align-items: center;
-        /* Klasszikus serif érintés a címeknél */
-        font-family: 'Georgia', serif; 
-    }
-    .sidebar-subtitle {
-        font-size: 0.75rem;
-        color: var(--rosewood);
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        margin-bottom: 1.5rem;
-        font-weight: 600;
-    }
-
-    /* --- Organikus Lebegő Kártyák (Result Cards) --- */
-    .result-card {
-        background: #FFFFFF;
-        border: 1px solid rgba(199, 209, 181, 0.4); /* Nagyon finom keret */
-        border-left: 5px solid var(--sage);
-        border-radius: var(--border-radius-soft); /* Buborékosabb, lágy formák */
-        padding: 1.4rem 1.8rem;
-        margin-bottom: 1.2rem;
-        box-shadow: 0 4px 12px rgba(95, 115, 80, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02);
-        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-        position: relative;
-        overflow: hidden;
-    }
-
-    /* Visszafogott neurális hálózat minta a kártyák jobb felső sarkában */
-    .result-card::before {
-        content: "";
-        position: absolute;
-        top: -15px;
-        right: -15px;
-        width: 60px;
-        height: 60px;
-        background: radial-gradient(circle, var(--sage-tint) 10%, transparent 10%),
-                    radial-gradient(circle, var(--sage-tint) 10%, transparent 10%);
-        background-size: 10px 10px;
-        opacity: 0.5;
-        border-radius: 50%;
-    }
-
-    .result-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 10px 20px rgba(95, 115, 80, 0.08);
-        border-color: var(--sage-light);
-    }
-
-    .result-card.positive { border-left-color: var(--sage); }
-    .result-card.negative { border-left-color: var(--taupe); opacity: 0.9; }
-    .result-card.filtered-out {
-        border-left-color: var(--rosewood-light);
-        background: linear-gradient(to right, var(--rosewood-tint), #FFFFFF);
-    }
-
-    .result-card h4 {
-        margin: 0 0 0.6rem 0;
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: var(--sage-deep);
-        font-family: 'Georgia', serif;
-    }
-    .result-card .meta { 
-        font-size: 0.85rem; 
-        color: var(--taupe-deep); 
-        font-weight: 500;
-    }
-
-    /* --- Címkék (Tags) - Szinaptikus hólyag forma --- */
-    .tag-yes, .tag-no, .tag-filtered {
-        display: inline-block;
-        font-size: 0.65rem;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        padding: 0.3rem 0.8rem;
-        border-radius: var(--border-radius-pill); /* Teljesen lekerekített */
-        text-transform: uppercase;
-        margin-right: 0.6rem;
-        margin-bottom: 0.5rem;
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05); /* Finom belső kontúr */
-    }
-    .tag-yes { background: var(--sage-tint); color: var(--sage-deep); }
-    .tag-no { background: var(--taupe-tint); color: var(--taupe-deep); }
-    .tag-filtered { background: rgba(212, 163, 159, 0.25); color: var(--rosewood-deep); }
-
-    /* --- Főoldali Fejléc --- */
-    .page-header {
-        margin-bottom: 2.5rem;
-    }
-    .page-header h1 {
-        font-size: 2.2rem;
-        font-weight: 800;
-        letter-spacing: 0.02em;
-        color: var(--sage-deep);
-        margin: 0;
-        font-family: 'Georgia', serif;
-    }
-    .page-header p {
-        font-size: 0.95rem;
-        color: var(--rosewood);
-        font-weight: 600;
-        margin: 0.4rem 0 0 0;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-
-    /* --- Elválasztó vonalak (Axonális design) --- */
-    hr {
-        border: none;
-        height: 2px;
-        background: linear-gradient(to right, transparent, var(--border-sage), transparent);
-        position: relative;
-        margin: 3rem 0;
-        overflow: visible;
-    }
-    hr::after {
-        /* Szinaptikus gomb szimbólum */
-        content: "●";
-        color: var(--neural-highlight);
-        font-size: 18px;
-        position: absolute;
-        left: 50%;
-        top: -12px;
-        transform: translateX(-50%);
-        text-shadow: 0 0 8px rgba(217, 108, 117, 0.4); /* Enyhe fluoreszcens hatás */
-    }
-
-    /* --- Gombok (Sima, modern) --- */
-    .stButton > button { 
-        border-radius: var(--border-radius-pill) !important; 
-        font-weight: 700 !important; 
-        letter-spacing: 0.05em !important; 
-        text-transform: uppercase;
-        font-size: 0.85rem !important;
-        transition: all 0.25s ease !important;
-        padding: 0.5rem 1.5rem !important;
-    }
-    [data-testid="baseButton-primary"] {
-        background: linear-gradient(135deg, var(--rosewood), var(--rosewood-light)) !important;
-        border: none !important;
-        color: #FFFFFF !important;
-        box-shadow: 0 4px 10px rgba(138, 79, 79, 0.3) !important;
-    }
-    [data-testid="baseButton-primary"]:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 15px rgba(138, 79, 79, 0.4) !important;
-        background: linear-gradient(135deg, var(--rosewood-deep), var(--rosewood)) !important;
-    }
-
-    /* Másodlagos gombok (Soma index stb.) */
-    [data-testid="baseButton-secondary"] {
-        border: 1px solid var(--border-sage) !important;
-        color: var(--sage-deep) !important;
-        background-color: transparent !important;
-    }
-    [data-testid="baseButton-secondary"]:hover {
-        border-color: var(--sage) !important;
-        background-color: var(--sage-tint) !important;
-    }
-
-    /* --- Tabok --- */
-    [data-testid="stTabs"] button {
-        font-weight: 700;
-        color: var(--taupe);
-        letter-spacing: 0.02em;
-        padding-bottom: 0.8rem;
-    }
-    [data-testid="stTabs"] button[aria-selected="true"] {
-        color: var(--sage-deep);
-        border-bottom-color: var(--neural-highlight); /* Aktív tab jelzése élénk színnel */
-        border-bottom-width: 3px;
-    }
-
-    /* --- Metrikák (Nagy számok) --- */
-    [data-testid="stMetricValue"] {
-        color: var(--sage-deep);
-        font-weight: 800;
-        font-family: 'Georgia', serif;
-    }
-    [data-testid="stMetricLabel"] {
-        color: var(--rosewood);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-
-    footer, #MainMenu { visibility: hidden; }
-</style>
-""", unsafe_allow_html=True)
-
-# CUSTOM ICONS (SVG)
-NEURON_MARK = """
-<svg width="24" height="24" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg"
-     style="vertical-align:-6px;margin-right:8px;">
-    <g stroke="#5F7350" stroke-width="2" fill="none" stroke-linecap="round">
-        <path d="M22 17 Q18 8 12 6"/><path d="M22 17 Q26 7 33 9"/>
-        <path d="M27 22 Q36 20 40 14"/><path d="M27 25 Q37 28 41 35"/>
-        <path d="M17 27 Q12 35 6 38"/><path d="M17 22 Q7 21 3 16"/>
-    </g>
-    <g fill="#5F7350">
-        <circle cx="12" cy="6" r="2"/><circle cx="33" cy="9" r="2"/>
-        <circle cx="40" cy="14" r="2"/><circle cx="41" cy="35" r="2"/>
-        <circle cx="6" cy="38" r="2"/><circle cx="3" cy="16" r="2"/>
-    </g>
-    <circle cx="22" cy="22" r="5" fill="#7A3B3B"/>
-</svg>
-"""
-
-SYNAPSE_MARK = """
-<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" 
-     style="vertical-align:-1px;margin-right:6px;">
-    <circle cx="12" cy="12" r="7" stroke="#7A3B3B" stroke-width="3"/>
-    <circle cx="12" cy="12" r="3" fill="#5F7350"/>
-</svg>
-"""
-
-# Display label -> internal operator code for the per-region projection rule.
-# Kept as an explicit mapping (rather than parsing substrings of the label)
-# so the displayed wording can change freely without touching the logic.
 RULE_OPERATORS = {
     "Required (AND)": "AND",
     "Excluded (NOT)": "NOT",
     "Optional (OR)": "OR",
     "Observe only": "NONE",
 }
-
-
-def section_header(title: str):
-    """Generates a custom formatted subheader with the SYNAPSE_MARK icon."""
-    st.markdown(f"<h4>{SYNAPSE_MARK}{title}</h4>", unsafe_allow_html=True)
-
 
 # GLOBAL DATA LOADING
 try:
@@ -341,81 +61,36 @@ with st.sidebar:
     st.markdown(f'<div class="sidebar-title">{NEURON_MARK} Palyakoveto</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Neuron Projection Analyzer</div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
-    # 1. Target Regions
-    # -------------------------------------------------------------------------
     st.markdown("**Target Brain Regions** *(optional)*",
-                help="Regions where you are looking for projections. Deep analysis "
-                     "runs only for the regions in this list. You may leave this "
-                     "EMPTY: the hemisphere analysis asks whether the axon crosses "
-                     "the midline, which is a question about the whole cell, not "
-                     "about any particular region.")
+                help="Regions where you are looking for projections. Leave empty for hemisphere-only run.")
     selected_region_names = st.multiselect(
         label="Search and select regions",
         options=list(region_options.keys()),
         default=[name for name in region_options.keys() if region_options[name] in DEFAULT_TARGET_REGIONS.values()],
-        help="Start typing the region name or acronym (e.g., M2, GPe). Leave empty "
-             "for a hemisphere-only run.",
-        key="region_selector",
-        label_visibility="collapsed"
+        key="region_selector", label_visibility="collapsed"
     )
     selected_region_ids = [region_options[name] for name in selected_region_names]
 
     if not selected_region_ids:
-        # Nem hiba, hanem egy értelmes üzemmód - de mondjuk is meg, mi marad.
-        st.caption(
-            "No target region — the run will still produce the **Hemisphere** tab "
-            "(ipsilateral vs. contralateral for the whole cell). Region-specific "
-            "tables and the Cortical Summary need at least one region."
-        )
+        st.caption("No target region — the run will still produce the **Hemisphere** tab.")
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # 2b. Hemisphere (laterality)
-    # -------------------------------------------------------------------------
-    # Az atlaszban MINDKÉT félteke ugyanazt a régió-ID-t viseli, ezért a régió-ID
-    # önmagában nem árulja el az oldalt - a felhasználónak kell eldöntenie.
-    st.markdown("**Hemisphere**",
-                help="The Allen atlas gives BOTH hemispheres the same region id, so "
-                     "'projects to GPe' would otherwise count the opposite side too. "
-                     "This is a scientific choice, so it is left to you. Whichever you "
-                     "pick, the ipsilateral/contralateral split is always exported, so "
-                     "you can see how much comes from the other side.")
+    st.markdown("**Hemisphere**", help="Ipsilateral vs Contralateral evaluation mode.")
     _lat_keys = list(LATERALITY_MODES.keys())
-    _default_label = next(k for k, (code, _) in LATERALITY_MODES.items()
-                          if code == DEFAULT_LATERALITY)
+    _default_label = next(k for k, (code, _) in LATERALITY_MODES.items() if code == DEFAULT_LATERALITY)
     lat_choice = st.radio(
-        label="Hemisphere",
-        options=_lat_keys,
-        index=_lat_keys.index(_default_label),
-        horizontal=True,
-        key="laterality_mode",
-        label_visibility="collapsed",
+        label="Hemisphere", options=_lat_keys, index=_lat_keys.index(_default_label),
+        horizontal=True, key="laterality_mode", label_visibility="collapsed",
     )
     laterality, _lat_help = LATERALITY_MODES[lat_choice]
     st.caption(f"➜ {_lat_help}")
     if laterality == 'both':
-        st.caption("ℹ️ Both sides are counted together — the same as all earlier runs, "
-                   "so previous results stay reproducible.")
+        st.caption("ℹ️ Both sides are counted together (legacy behavior).")
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # 2. Projection criteria & set logic (AND/OR/NOT), per region
-    # -------------------------------------------------------------------------
-    # EGY hely dönt arról, mi számít vetítésnek: ugyanezek a számok hajtják a
-    # "..._projects" pipát, a szűrést és az összesítő táblákat is.
-    st.markdown("**Projection Criteria**",
-                help="What counts as a projection in each region. These same numbers drive "
-                     "the projection check marks, the filter and the summary tables, so they "
-                     "can never disagree.")
-    st.caption(
-        "Default is **≥1 endpoint AND ≥1 branch point** — a genuine terminal arborization, "
-        "so an axon that merely passes through is not counted. Raise the numbers to be "
-        "stricter, or set branch points to 0 for an endpoint-only rule."
-    )
-
+    st.markdown("**Projection Criteria**", help="What counts as a projection in each region.")
     criteria_per_region: dict[int, FilterCriteria] = {}
 
     if not selected_region_ids:
@@ -427,109 +102,51 @@ with st.sidebar:
 
             with st.expander(f"Filters for {short_name}", expanded=False):
                 st.markdown(
-                    "<div style='font-size:0.78rem;font-weight:700;letter-spacing:0.04em;"
-                    "text-transform:uppercase;color:var(--taupe-deep);margin-bottom:0.3rem;'>"
-                    "Condition Rule</div>",
-                    unsafe_allow_html=True
-                )
+                    "<div style='font-size:0.78rem;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:var(--taupe-deep);margin-bottom:0.3rem;'>Condition Rule</div>",
+                    unsafe_allow_html=True)
                 rule_label = st.radio(
-                    label="Condition rule",
-                    options=list(RULE_OPERATORS.keys()),
-                    horizontal=True,
-                    help=(
-                        "Required: the cell must project here. Excluded: the cell is "
-                        "disqualified if it projects here. Optional: counts toward an "
-                        "OR-combination with other Optional regions. Observe only: the "
-                        "region's numbers are reported but it does NOT filter anything — "
-                        "use this to add a region purely to look at it."
-                    ),
-                    key=f"filter_rule_{region_id}",
-                    label_visibility="collapsed",
+                    label="Condition rule", options=list(RULE_OPERATORS.keys()), horizontal=True,
+                    key=f"filter_rule_{region_id}", label_visibility="collapsed",
                 )
                 op = RULE_OPERATORS[rule_label]
-                if op == 'NONE':
-                    st.caption("👁 Observe only — reported, but does not filter any cells.")
+                if op == 'NONE': st.caption("👁 Observe only — reported, but does not filter any cells.")
 
-                min_ep = st.number_input(
-                    "Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
-                    help=f"Axon terminals that must fall inside {short_name} for the cell to "
-                         f"count as projecting there.",
-                    key=f"filter_ep_{region_id}"
-                )
-                min_br = st.number_input(
-                    "Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'], step=1,
-                    help=f"Branch points required inside {short_name}. Together with the "
-                         f"endpoints this defines a real terminal arborization; set to 0 for "
-                         f"an endpoint-only rule.",
-                    key=f"filter_br_{region_id}"
-                )
-                min_len = st.number_input(
-                    "Min. axon length (µm)", min_value=0.0, value=float(DEFAULT_FILTER['min_axon_length_um']),
-                    step=10.0,
-                    help="Minimum total length of axon segments within the target region.",
-                    key=f"filter_len_{region_id}"
-                )
-                min_ep_pct = st.number_input(
-                    "Min. endpoint share (%)", min_value=0.0, max_value=100.0,
-                    value=float(DEFAULT_FILTER['min_endpoint_fraction'] * 100), step=0.5,
-                    help=(
-                        "Size-independent threshold: the share of the cell's TOTAL axon "
-                        "endpoints that must fall inside this region. Combine with the "
-                        "'Excluded (NOT)' rule to remove Layer 6 cells — e.g. set 2.5% on the "
-                        "thalamus and mark it NOT to drop cells whose endpoints are mostly thalamic."
-                    ),
-                    key=f"filter_eppct_{region_id}"
-                )
-                # A végpont-arány minden más feltétellel ÉS kapcsolatban van, ezért
-                # egy L6-szűrőnél (NOT + arány) az elágazás-küszöb is beleszólna.
-                # Ha tisztán az arány alapján akarunk kizárni, az elágazás legyen 0.
+                min_ep = st.number_input("Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'], step=1,
+                                         key=f"filter_ep_{region_id}")
+                min_br = st.number_input("Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'],
+                                         step=1, key=f"filter_br_{region_id}")
+                min_len = st.number_input("Min. axon length (µm)", min_value=0.0,
+                                          value=float(DEFAULT_FILTER['min_axon_length_um']), step=10.0,
+                                          key=f"filter_len_{region_id}")
+                min_ep_pct = st.number_input("Min. endpoint share (%)", min_value=0.0, max_value=100.0,
+                                             value=float(DEFAULT_FILTER['min_endpoint_fraction'] * 100), step=0.5,
+                                             key=f"filter_eppct_{region_id}")
+
                 if min_ep_pct > 0 and op == 'NOT' and int(min_br) > 0:
-                    st.info(
-                        f"Tip: this excludes cells that arborise here **and** exceed "
-                        f"{min_ep_pct:g}%. To exclude on the endpoint share alone "
-                        f"(the usual Layer-6 filter), set *Min. branch points* to 0.",
-                        icon="💡"
-                    )
+                    st.info(f"Tip: this excludes cells that arborise here **and** exceed {min_ep_pct:g}%.", icon="💡")
 
                 criteria_per_region[region_id] = FilterCriteria(
-                    min_endpoints=int(min_ep),
-                    min_branch_points=int(min_br),
-                    min_axon_length_um=float(min_len),
-                    min_endpoint_fraction=float(min_ep_pct) / 100.0,
-                    operator=op  # Átadjuk az operátort a backendnek
+                    min_endpoints=int(min_ep), min_branch_points=int(min_br),
+                    min_axon_length_um=float(min_len), min_endpoint_fraction=float(min_ep_pct) / 100.0, operator=op
                 )
-                # Élő visszajelzés: pontosan ez a szabály dönt a pipáról ÉS a szűrésről.
                 st.caption(
-                    f"➜ Counts as projecting to {short_name} when: "
-                    f"**{criteria_per_region[region_id].describe()}**"
-                )
-                if int(min_ep) == 0 and int(min_br) == 0:
-                    st.warning(
-                        "With both at 0, any axon presence counts — including axons that "
-                        "merely pass through.", icon="⚠️"
-                    )
+                    f"➜ Counts as projecting to {short_name} when: **{criteria_per_region[region_id].describe()}**")
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # 3. Cell Selection
-    # -------------------------------------------------------------------------
-    st.markdown("**Cell Files (SWC)**",
-                help="Select the neurons to analyze. You can use the soma filter to find targeted populations.")
-
+    st.markdown("**Cell Files (SWC)**", help="Select the neurons to analyze.")
     if not all_swc:
         st.warning(f"No SWC files found in:\n`{BASE_DATA_DIR}`")
         selected_swc_paths = []
     else:
         if not soma_index_exists():
             st.warning("Soma region index not built yet.")
-            if st.button("Build soma index", key="btn_build_index",
-                         help="Required on first run. Scans all SWC files to extract soma locations."):
+            if st.button("Build soma index", key="btn_build_index"):
                 progress_bar = st.progress(0, text="Building soma index...")
 
 
-                def update_progress(current, total, filename):
-                    progress_bar.progress(current / total if total > 0 else 0, text=f"Indexing: {filename}")
+                def update_progress(current, total, filename): progress_bar.progress(
+                    current / total if total > 0 else 0, text=f"Indexing: {filename}")
 
 
                 with st.spinner("Building soma index..."):
@@ -539,19 +156,15 @@ with st.sidebar:
             soma_index = None
         else:
             soma_index = load_soma_index()
-            if st.button("Rebuild Index", key="btn_rebuild_index", use_container_width=True,
-                         help="Update this if you copied new SWC files into the data folder."):
+            if st.button("Rebuild Index", key="btn_rebuild_index", use_container_width=True):
                 with st.spinner("Rebuilding soma index..."):
                     build_soma_index(BASE_DATA_DIR, atlas_matrix, dictionary)
                 st.rerun()
 
         soma_search = ""
         if soma_index is not None:
-            soma_search = st.text_input(
-                "Filter by soma region", placeholder="e.g. motor, thalamus...",
-                help="Lists only cells whose soma is located in this region. Partial matches are accepted.",
-                key="soma_search"
-            )
+            soma_search = st.text_input("Filter by soma region", placeholder="e.g. motor, thalamus...",
+                                        key="soma_search")
             filtered_swc = filter_swc_by_soma_region(all_swc, soma_index, soma_search) if soma_search else all_swc
         else:
             filtered_swc = all_swc
@@ -560,77 +173,36 @@ with st.sidebar:
                                  key="analysis_mode")
 
         if analysis_mode == "Single cell":
-            selected_name = st.selectbox("Select cell", options=list(filtered_swc.keys()),
-                                         help="Select the specific SWC file for analysis.", key="single_cell_selector")
+            selected_name = st.selectbox("Select cell", options=list(filtered_swc.keys()), key="single_cell_selector")
             selected_swc_paths = [filtered_swc[selected_name]] if filtered_swc else []
         else:
             st.markdown(f"**{len(filtered_swc)} cells available for batch analysis.**")
-
-            batch_method = st.radio(
-                "Selection method",
-                options=["Analyze ALL matched cells", "Select specific cells manually"],
-                horizontal=True,
-                label_visibility="collapsed"
-            )
-
+            batch_method = st.radio("Selection method",
+                                    options=["Analyze ALL matched cells", "Select specific cells manually"],
+                                    horizontal=True, label_visibility="collapsed")
             if batch_method == "Analyze ALL matched cells":
                 selected_swc_paths = list(filtered_swc.values())
                 st.info(f"Ready to analyze all **{len(selected_swc_paths)}** cells. Click 'Run Analysis' below.")
             else:
-                selected_names = st.multiselect(
-                    "Select specific cells",
-                    options=list(filtered_swc.keys()),
-                    default=[],
-                    help="Start typing to search. Select only the cells you need. (A maximum of 50-60 is recommended for joint 3D rendering.)",
-                    key="batch_selector"
-                )
+                selected_names = st.multiselect("Select specific cells", options=list(filtered_swc.keys()), default=[],
+                                                key="batch_selector")
                 selected_swc_paths = [filtered_swc[name] for name in selected_names]
-
-                if not selected_swc_paths:
-                    st.warning("Please select at least one cell from the dropdown.")
+                if not selected_swc_paths: st.warning("Please select at least one cell from the dropdown.")
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # 4. Visualization Settings (With Axon-in-Region)
-    # -------------------------------------------------------------------------
-    st.markdown("**Visualization Settings**",
-                help="These toggles only affect the appearance of the 3D Plotly scene, not the numerical analysis.")
-
-    # A vékony axonvonalak sötét háttéren sokkal jobban láthatók, ezért ez az
-    # alapértelmezés. Mindkét paletta ellenőrzött (világosság, króma, színtévesztő
-    # elkülönülés, kontraszt) - lásd config.VIZ_THEMES.
+    st.markdown("**Visualization Settings**", help="Toggles affect only the 3D Plotly scene.")
     theme_labels = {v['label']: k for k, v in VIZ_THEMES.items()}
-    theme_choice = st.selectbox(
-        "Scene theme", options=list(theme_labels.keys()),
-        index=list(theme_labels.values()).index(DEFAULT_VIZ_THEME),
-        help="Dark makes thin axons far easier to see. Both palettes are "
-             "colour-blind checked and keep at least 3:1 contrast with the background.",
-        key="viz_theme"
-    )
+    theme_choice = st.selectbox("Scene theme", options=list(theme_labels.keys()),
+                                index=list(theme_labels.values()).index(DEFAULT_VIZ_THEME), key="viz_theme")
     viz_theme = theme_labels[theme_choice]
 
-    show_brain_outline = st.toggle(
-        "Show brain outline", value=True,
-        help="Draws the whole brain surface very faintly, so you can tell where "
-             "in the brain the cell sits instead of it floating in space.",
-        key="toggle_brain_outline"
-    )
+    show_brain_outline = st.toggle("Show brain outline", value=True, key="toggle_brain_outline")
     show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
     show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
+    show_only_target_regions = st.toggle("Axon-in-region view", value=False, key="toggle_exclusive")
 
-    # --- ÚJ KAPCSOLÓ AZ AXON-IN-REGION NÉZETHEZ ---
-    show_only_target_regions = st.toggle(
-        "Axon-in-region view", value=False,
-        help="If toggled, the system hides all axon branches outside the examined regions, clearing up the visual noise.",
-        key="toggle_exclusive"
-    )
-
-# MAIN CONTENT (TABS LAYOUT)
-
-# A célterület SZÁNDÉKOSAN nem kötelező: a féltekei (középvonal-átlépési) elemzés
-# az egész sejtre vonatkozik, nem egy régióra, ezért régiók nélkül is van értelme
-# futtatni. Csak sejt kell hozzá.
+# MAIN CONTENT
 if not selected_swc_paths:
     st.markdown(f"""
     <div class="page-header" style="text-align: center; margin-top: 10vh;">
@@ -639,15 +211,9 @@ if not selected_swc_paths:
         <p>Neuron Projection Analyzer &mdash; HUN-REN KOKI</p>
     </div>
     """, unsafe_allow_html=True)
-
-    st.info(
-        "**Welcome.** Select one or more cell files from the sidebar to begin. "
-        "Target regions are optional — without them you still get the hemisphere "
-        "(midline crossing) analysis."
-    )
+    st.info("**Welcome.** Select one or more cell files from the sidebar to begin.")
     st.stop()
 
-# --- Run Button ---
 any_filter_active = any(c.is_active() for c in criteria_per_region.values())
 filter_note = " (Filters active)" if any_filter_active else ""
 
@@ -655,88 +221,58 @@ _, col_btn, _ = st.columns([1, 2, 1])
 with col_btn:
     run_button = st.button(
         f"Run Analysis for {len(selected_swc_paths)} cell{'s' if len(selected_swc_paths) > 1 else ''}{filter_note}",
-        type="primary", use_container_width=True
-    )
+        type="primary", use_container_width=True)
 
 if run_button:
-    st.session_state['results'] = []
-    st.session_state['errors'] = []
+    st.session_state['results'], st.session_state['errors'] = [], []
     st.session_state['criteria_per_region'] = criteria_per_region
 
     region_descendants = build_region_descendants(dictionary, selected_region_ids)
-    # A 3D nézetnek is szüksége van rá (szülő régiók felszíne, színezés, szűrés),
-    # ezért elmentjük - a megjelenítés újrafuttatás nélkül is fut.
     st.session_state['region_descendants'] = region_descendants
-    # A futtatáskor érvényes kritériumok az exportokhoz/összesítőkhöz.
     st.session_state['criteria_used'] = criteria_per_region
     st.session_state['laterality_used'] = laterality
-    # A virtuális "leszálló agytörzs" régió nevét külön adjuk át (nincs a szótárban).
     region_names = {BRAINSTEM_MOTOR_ID: BRAINSTEM_MOTOR_NAME}
 
     progress = st.progress(0, text="Analyzing cells...")
 
 
-    # Létrehozunk egy segédfüggvényt a szálak számára (ez nem módosítja a logikát, csak csomagol)
     def process_single_cell(filepath):
         cell_name = next((k for k, v in filtered_swc.items() if v == filepath), os.path.basename(filepath))
         try:
-            swc_df = load_swc(filepath)
-            # FONTOS: a criteria_per_region-t át KELL adni, különben a projects_here
-            # az alapértelmezett kritériummal készül, és az oldalsávban beállított
-            # küszöbök semmit nem csinálnának (sem a pipára, sem a szűrésre).
-            result = run_analysis(swc_df, atlas_matrix, dictionary, selected_region_ids,
-                                  region_descendants, region_names, criteria_per_region,
-                                  laterality)
-            result = apply_filter(result, criteria_per_region)
-            return (cell_name, result, None)
+            result = run_analysis(load_swc(filepath), atlas_matrix, dictionary, selected_region_ids, region_descendants,
+                                  region_names, criteria_per_region, laterality)
+            return (cell_name, apply_filter(result, criteria_per_region), None)
         except Exception as e:
             return (cell_name, None, str(e))
 
 
-    # Párhuzamos végrehajtás elindítása
-    # A max_workers a szálak számát jelenti. Az i7-es processzorodhoz a 16 vagy 20 ideális.
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        # Elindítjuk a feladatokat az összes kiválasztott SWC fájlra
         futures = {executor.submit(process_single_cell, path): path for path in selected_swc_paths}
-
-        completed_count = 0
-        total_count = len(selected_swc_paths)
-
-        # Ahogy a szálak végeznek a sejtekkel, begyűjtjük az eredményeket
+        completed_count, total_count = 0, len(selected_swc_paths)
         for future in concurrent.futures.as_completed(futures):
             cell_name, result, error = future.result()
-
             if error is None:
                 st.session_state['results'].append((cell_name, result))
             else:
                 st.session_state['errors'].append((cell_name, error))
-
-            # Progress bar frissítése
             completed_count += 1
             progress.progress(completed_count / total_count if total_count > 0 else 0,
                               text=f"Analyzed {completed_count}/{total_count}: {cell_name}")
 
-    # A szálak befejezési sorrendje futásonként más, ezért a lista sorrendje is
-    # ingadozna (pl. a Single Cell Inspector legördülője). Névre rendezve a
-    # futások reprodukálhatók.
     st.session_state['results'].sort(key=lambda r: r[0])
     st.session_state['errors'].sort(key=lambda r: r[0])
-
     progress.empty()
 
-# --- Display Results ---
+# DISPLAY RESULTS
 if 'errors' in st.session_state and st.session_state['errors']:
     with st.expander(f"{len(st.session_state['errors'])} file(s) could not be loaded"):
-        for name, err in st.session_state['errors']:
-            st.error(f"**{name}**: {err}")
+        for name, err in st.session_state['errors']: st.error(f"**{name}**: {err}")
 
 if 'results' in st.session_state and st.session_state['results']:
     results = st.session_state['results']
     saved_criteria = st.session_state.get('criteria_per_region', {})
     filter_was_active = any(c.is_active() for c in saved_criteria.values())
-    # A futtatáskor érvényes vetítés-definíció (nem a jelenlegi sidebar állapot).
     criteria_used = st.session_state.get('criteria_used', saved_criteria)
-    # A szülő->leszármazott feloldás a 3D nézethez (Brain stem, Thalamus stb.).
     descendants_used = st.session_state.get('region_descendants', {})
     saved_laterality = st.session_state.get('laterality_used', 'both')
 
@@ -745,94 +281,58 @@ if 'results' in st.session_state and st.session_state['results']:
     # SINGLE CELL VIEW
     if len(results) == 1:
         cell_name, result = results[0]
-
         tab_data, tab_3d = st.tabs(["Analytics & Data", "Interactive 3D Viewer"])
 
         with tab_data:
-            if result.passes_filter is True:
-                filter_status = '<span class="tag-yes" style="margin-left:15px;">Passes filter</span>'
-            elif result.passes_filter is False:
-                filter_status = '<span class="tag-filtered" style="margin-left:15px;">Filtered out</span>'
-            else:
-                filter_status = ""
-            st.markdown(
-                f"<h3>{cell_name}{filter_status}</h3>",
-                unsafe_allow_html=True)
+            filter_status = '<span class="tag-yes" style="margin-left:15px;">Passes filter</span>' if result.passes_filter is True else (
+                '<span class="tag-filtered" style="margin-left:15px;">Filtered out</span>' if result.passes_filter is False else "")
+            st.markdown(f"<h3>{cell_name}{filter_status}</h3>", unsafe_allow_html=True)
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Soma location", result.soma_region_name)
-            proj_count = sum(1 for tr in result.target_results if tr.projects_here)
-            m2.metric("Confirmed projections", f"{proj_count} / {len(result.target_results)} targets")
+            m2.metric("Confirmed projections",
+                      f"{sum(1 for tr in result.target_results if tr.projects_here)} / {len(result.target_results)} targets")
             m3.metric("Total axon length", f"{result.total_axon_length_um:,.0f} µm")
 
-            # --- Oldaliság az EGÉSZ sejtre: célterület nélkül is ez az érdemi adat ---
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Hemisphere")
             if result.has_hemisphere:
                 h1, h2, h3 = st.columns(3)
                 h1.metric("Laterality", LATERALITY_CLASS_LABELS[result.laterality_class])
-                h2.metric("Endpoints ipsi / contra",
-                          f"{result.endpoints_ipsi_total} / {result.endpoints_contra_total}")
+                h2.metric("Endpoints ipsi / contra", f"{result.endpoints_ipsi_total} / {result.endpoints_contra_total}")
                 h3.metric("Axon contra",
-                          f"{result.axon_length_contra_um:,.0f} µm "
-                          f"({result.contra_axon_fraction * 100:.1f}%)")
+                          f"{result.axon_length_contra_um:,.0f} µm ({result.contra_axon_fraction * 100:.1f}%)")
             else:
-                st.info(
-                    "Laterality cannot be determined for this cell — there is no soma, "
-                    "or the soma sits exactly on the midline, so there is no side to "
-                    "compare the axon against."
-                )
+                st.info("Laterality cannot be determined for this cell (no soma or exactly on midline).")
 
             if result.target_results:
                 st.markdown("<br>", unsafe_allow_html=True)
                 section_header("Target Region Results")
             else:
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.caption(
-                    "No target region selected — only whole-cell measures are shown. "
-                    "Add a region in the sidebar for per-region projection results."
-                )
+                st.caption("No target region selected — only whole-cell measures are shown.")
 
             for tr in result.target_results:
                 cr = saved_criteria.get(tr.region_id, FilterCriteria())
-
-                # Vizsgáljuk, hogy ez a régió egyáltalán "aktív" szűrő-e
                 is_active_rule = cr.is_active() and filter_was_active
                 meets_rule = cr.meets_thresholds(tr)
 
-                # Ha a NOT szűrőt bukja el a sejt, azt külön kiemeljük
                 if is_active_rule and cr.operator == 'NOT' and meets_rule:
-                    st.markdown(f"""
-                    <div class="result-card filtered-out">
-                        <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
-                        <span class="tag-filtered">Violated NOT rule</span>
-                        <div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> &nbsp;|&nbsp; Branch points: <b>{tr.branch_point_count}</b> &nbsp;|&nbsp; Axon: <b>{tr.axon_length_um:,.1f} µm</b></div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Violated NOT rule</span><div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> | Branch points: <b>{tr.branch_point_count}</b> | Axon: <b>{tr.axon_length_um:,.1f} µm</b></div></div>',
+                        unsafe_allow_html=True)
                 elif is_active_rule and cr.operator == 'AND' and not meets_rule:
-                    st.markdown(f"""
-                    <div class="result-card filtered-out">
-                        <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
-                        <span class="tag-filtered">Did not meet thresholds</span>
-                        <div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> &nbsp;|&nbsp; Branch points: <b>{tr.branch_point_count}</b> &nbsp;|&nbsp; Axon: <b>{tr.axon_length_um:,.1f} µm</b></div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Did not meet thresholds</span><div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> | Branch points: <b>{tr.branch_point_count}</b> | Axon: <b>{tr.axon_length_um:,.1f} µm</b></div></div>',
+                        unsafe_allow_html=True)
                 elif tr.projects_here:
-                    st.markdown(f"""
-                    <div class="result-card positive">
-                        <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
-                        <span class="tag-yes">Projection Confirmed</span>
-                        <div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> &nbsp;|&nbsp; Branch points: <b>{tr.branch_point_count}</b> &nbsp;|&nbsp; Axon: <b>{tr.axon_length_um:,.1f} µm</b></div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="result-card positive"><h4>{tr.region_name}</h4><span class="tag-yes">Projection Confirmed</span><div class="meta" style="margin-top:6px;">Endpoints: <b>{tr.endpoint_count}</b> | Branch points: <b>{tr.branch_point_count}</b> | Axon: <b>{tr.axon_length_um:,.1f} µm</b></div></div>',
+                        unsafe_allow_html=True)
                 else:
-                    st.markdown(f"""
-                    <div class="result-card negative">
-                        <h4>{tr.region_name} <span style="color:#888;font-weight:400;font-size:0.82rem;">ID {tr.region_id}</span></h4>
-                        <span class="tag-no">No Projection</span>
-                        <div class="meta" style="margin-top:6px;">Axon may pass through but has no endpoints or branch points here.</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="result-card negative"><h4>{tr.region_name}</h4><span class="tag-no">No Projection</span><div class="meta" style="margin-top:6px;">Axon may pass through but has no endpoints or branch points here.</div></div>',
+                        unsafe_allow_html=True)
 
             if result.other_projection_regions:
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -848,11 +348,9 @@ if 'results' in st.session_state and st.session_state['results']:
                 "**Tip:** Use the left mouse button to rotate, the right button to pan, and the scroll wheel to zoom.")
             with st.spinner("Building interactive 3D plot..."):
                 fig = build_3d_plot(
-                    result, atlas_matrix, cell_name,
-                    show_soma_region=show_soma_region,
+                    result, atlas_matrix, cell_name, show_soma_region=show_soma_region,
                     show_other_regions=show_other_regions,
-                    show_only_target_regions=show_only_target_regions,  # Bepasszoljuk a UI kapcsolót
-                    region_descendants=descendants_used,
+                    show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
                     theme=viz_theme, show_brain_outline=show_brain_outline
                 )
             st.plotly_chart(fig, use_container_width=True)
@@ -860,8 +358,7 @@ if 'results' in st.session_state and st.session_state['results']:
     # BATCH VIEW
     else:
         tab_stats, tab_hemi, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
-            ["Population Statistics", "Hemisphere", "Cortical Summary",
-             "Single Cell Inspector", "Combined 3D View"])
+            ["Population Statistics", "Hemisphere", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"])
 
         with tab_stats:
             passed = sum(1 for _, r in results if r.passes_filter is True)
@@ -879,285 +376,124 @@ if 'results' in st.session_state and st.session_state['results']:
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Soma Region Distribution")
-            st.caption(
-                "Distribution of cell bodies across different regions and the number of successfully projecting cells.")
 
-            soma_counts = {}
-            for cell_name, r in results:
-                soma = r.soma_region_name
-                if soma not in soma_counts:
-                    soma_counts[soma] = {'total': 0, 'projecting': 0, 'ids': []}
+            # --- ITT TISZTULT KI A KÓD: Külső logika meghívása ---
+            soma_df = build_soma_distribution_summary(results, filter_was_active)
 
-                soma_counts[soma]['total'] += 1
+            st.dataframe(soma_df, use_container_width=True, hide_index=True,
+                         column_config={
+                             "Valid Projections %": st.column_config.NumberColumn("Valid Projections %",
+                                                                                  format="%.1f%%"),
+                             "Projecting Cell IDs": st.column_config.TextColumn("Projecting Cell IDs", width="large"),
+                         },
+                         )
 
-                if filter_was_active:
-                    is_projecting = bool(r.passes_filter)
-                else:
-                    is_projecting = any(tr.projects_here for tr in r.target_results)
-
-                if is_projecting:
-                    soma_counts[soma]['projecting'] += 1
-                    # A vetítő sejt sorszáma Nóra formátumában (a .swc kiterjesztés nélkül),
-                    # hogy vissza lehessen keresni az adatbázisban.
-                    cell_id = cell_name[:-4] if cell_name.lower().endswith('.swc') else cell_name
-                    soma_counts[soma]['ids'].append(cell_id)
-
-            soma_df = pd.DataFrame([
-                {
-                    "Soma Region": soma,
-                    "Total Cells": data['total'],
-                    "Valid Projections": data['projecting'],
-                    # Százalékos arány: a vetítő sejtek hányada a régió összes sejtjéből.
-                    "Valid Projections %": round(
-                        100 * data['projecting'] / data['total'], 1
-                    ) if data['total'] > 0 else 0.0,
-                    # A vetítő sejtek sorszámai (mint a korábbi CSV-kben).
-                    "Projecting Cell IDs": ", ".join(data['ids']),
-                }
-                for soma, data in soma_counts.items()
-            ]).sort_values(by="Total Cells", ascending=False)
-
-            st.dataframe(
-                soma_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Valid Projections %": st.column_config.NumberColumn(
-                        "Valid Projections %", format="%.1f%%",
-                        help="Valid Projections ÷ Total Cells, region by region."
-                    ),
-                    "Projecting Cell IDs": st.column_config.TextColumn(
-                        "Projecting Cell IDs", width="large",
-                        help="Serial numbers of the cells that pass, for lookup in the database."
-                    ),
-                },
-            )
-
-            soma_csv = soma_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "Download Soma Region Summary (CSV)", data=soma_csv,
-                file_name="soma_region_summary.csv", mime="text/csv",
-                key="download_soma_summary"
-            )
+            if not soma_df.empty:
+                soma_csv = soma_df.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Soma Region Summary (CSV)", data=soma_csv,
+                                   file_name="soma_region_summary.csv", mime="text/csv", key="download_soma_summary")
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Detailed Batch Data")
-
             summary_df = results_to_dataframe(results, selected_region_ids, dictionary, criteria_used)
-            if filter_was_active:
-                summary_df = summary_df.sort_values('passes_filter', ascending=False)
-
+            if filter_was_active: summary_df = summary_df.sort_values('passes_filter', ascending=False)
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
             csv_data = summary_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Dataset (CSV)", data=csv_data, file_name="batch_results.csv", mime="text/csv")
 
-        # HEMISPHERE TAB — az EGÉSZ sejtre vonatkozó oldaliság, célterület nélkül is
-        # Ez a fül arra a kérdésre válaszol, hogy "hány sejt NEM vetít a túloldalra".
-        # Szándékosan FÜGGETLEN a célterületektől és az oldalsávi Hemisphere
-        # beállítástól: a középvonal-átlépés az egész axonfa tulajdonsága.
         with tab_hemi:
             section_header("Hemisphere — does the axon cross the midline?")
-            st.caption(
-                "This tab looks at the **whole axon tree** relative to the soma, so it "
-                "needs no target region and ignores the sidebar Hemisphere setting "
-                "(that one restricts counting *inside* a region). Biologically this is "
-                "the IT/PT split: pyramidal-tract cells stay essentially ipsilateral, "
-                "cortico-cortical cells send an axon across the corpus callosum."
-            )
-
             lat = build_laterality_summary(results)
 
             m1, m2, m3, m4 = st.columns(4)
-            n_ipsi_only = lat['counts']['ipsi_only']
-            n_crosses = lat['counts']['crosses_only']
-            n_contra = lat['counts']['contra']
             m1.metric("Cells analyzed", lat['n_total'])
-            m2.metric("Ipsilateral only", n_ipsi_only,
-                      help="The axon never crosses the midline.")
-            m3.metric("No contralateral endpoints", n_ipsi_only + n_crosses,
-                      help="Ipsilateral-only cells PLUS cells whose axon crosses but "
-                           "does not terminate on the far side. This is the direct "
-                           "answer to 'how many cells do not project contralaterally'.")
-            m4.metric("Projects contralaterally", n_contra)
+            m2.metric("Ipsilateral only", lat['counts']['ipsi_only'])
+            m3.metric("No contralateral endpoints", lat['counts']['ipsi_only'] + lat['counts']['crosses_only'])
+            m4.metric("Projects contralaterally", lat['counts']['contra'])
 
             if lat['n_decided'] < lat['n_total']:
                 st.warning(
-                    f"{lat['n_total'] - lat['n_decided']} cell(s) could not be "
-                    "classified (no soma, or the soma sits exactly on the midline). "
-                    "They are shown separately and are **excluded from the "
-                    "percentages** — we cannot claim they are ipsilateral, only that "
-                    "we do not know."
-                )
+                    f"{lat['n_total'] - lat['n_decided']} cell(s) could not be classified (no soma, or soma on midline).")
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Overall")
-            st.dataframe(
-                lat['overall'], use_container_width=True, hide_index=True,
-                column_config={
-                    "% of decided": st.column_config.NumberColumn(
-                        "% of decided", format="%.1f%%",
-                        help="Denominator is the number of cells where laterality "
-                             "could be determined, not the total."
-                    ),
-                    "Cell IDs": st.column_config.TextColumn("Cell IDs", width="large"),
-                },
-            )
-
-            st.info(
-                "**Why three categories and not two.** A truncated reconstruction can "
-                "show an axon crossing the midline and then simply stopping — that is "
-                "not evidence of a contralateral projection, but it is not evidence of "
-                "an ipsilateral-only cell either. Keeping *crosses, no endpoints* "
-                "separate means you can decide which way to count it instead of the "
-                "program deciding silently."
-            )
+            st.dataframe(lat['overall'], use_container_width=True, hide_index=True,
+                         column_config={"% of decided": st.column_config.NumberColumn("% of decided", format="%.1f%%"),
+                                        "Cell IDs": st.column_config.TextColumn("Cell IDs", width="large")}
+                         )
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("By soma region")
-            st.caption(
-                "One row per soma region — so a soma filter of 'layer 5' gives you the "
-                "layer-5 answer directly."
-            )
             if not lat['by_soma'].empty:
-                st.dataframe(
-                    lat['by_soma'], use_container_width=True, hide_index=True,
-                    column_config={
-                        "No contralateral %": st.column_config.NumberColumn(
-                            "No contralateral %", format="%.1f%%",
-                            help="(Ipsilateral only + crosses without endpoints) "
-                                 "÷ cells where laterality could be determined."
-                        ),
-                        "Ipsilateral-only cell IDs": st.column_config.TextColumn(
-                            "Ipsilateral-only cell IDs", width="large",
-                            help="Serial numbers for lookup in the database."
-                        ),
-                    },
-                )
-                st.download_button(
-                    "Download Hemisphere Summary (CSV)",
-                    data=lat['by_soma'].to_csv(index=False).encode('utf-8'),
-                    file_name="hemisphere_by_soma_region.csv", mime="text/csv",
-                    key="download_hemi_soma"
-                )
+                st.dataframe(lat['by_soma'], use_container_width=True, hide_index=True,
+                             column_config={"No contralateral %": st.column_config.NumberColumn("No contralateral %",
+                                                                                                format="%.1f%%"),
+                                            "Ipsilateral-only cell IDs": st.column_config.TextColumn(
+                                                "Ipsilateral-only cell IDs", width="large")}
+                             )
+                st.download_button("Download Hemisphere Summary (CSV)",
+                                   data=lat['by_soma'].to_csv(index=False).encode('utf-8'),
+                                   file_name="hemisphere_by_soma_region.csv", mime="text/csv", key="download_hemi_soma")
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Cell by cell")
-            st.caption(
-                "The raw numbers behind the classification, so any single cell can be "
-                "checked by hand in the 3D viewer."
-            )
             st.dataframe(lat['per_cell'], use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download Per-Cell Laterality (CSV)",
-                data=lat['per_cell'].to_csv(index=False).encode('utf-8'),
-                file_name="hemisphere_per_cell.csv", mime="text/csv",
-                key="download_hemi_cells"
-            )
+            st.download_button("Download Per-Cell Laterality (CSV)",
+                               data=lat['per_cell'].to_csv(index=False).encode('utf-8'),
+                               file_name="hemisphere_per_cell.csv", mime="text/csv", key="download_hemi_cells")
 
-        # CORTICAL SUMMARY TAB — a Nóra-féle végleges táblázatok, automatikusan
         with tab_summary:
             section_header("Cortical Projection Summary")
-            st.caption(
-                "Ready-to-send tables, per cortical region. Cells are counted with the same "
-                "projection criteria shown in the sidebar — and each percentage is taken "
-                "against the population base you choose below, so there is no wrong denominator."
-            )
-            st.warning(
-                "**These tables deliberately ignore the Required / Excluded / Optional rules.** "
-                "They are built only from *which regions each cell projects to* plus the "
-                "population base chosen below. So an *Excluded (NOT)* rule — e.g. a Layer-6 "
-                "thalamus filter — does **not** remove cells from these tables. Use the "
-                "brain-stem base to select pyramidal-tract cells instead. "
-                "(The Population Statistics tab does apply the rules.)",
-                icon="ℹ️"
-            )
 
 
             def _region_label(rid: int) -> str:
-                if rid == BRAINSTEM_MOTOR_ID:
-                    return "Brain stem (descending)"
+                if rid == BRAINSTEM_MOTOR_ID: return "Brain stem (descending)"
                 names = dictionary.loc[dictionary['id'] == rid, 'safe_name'].tolist()
                 return names[0] if names else f"ID {rid}"
 
 
             label_to_id = {_region_label(rid): rid for rid in selected_region_ids}
             base_options = ["(All L5 cells — no PT base)"] + list(label_to_id.keys())
-            # Alapértelmezés: a leszálló agytörzs, ha ki van választva.
-            default_idx = 0
-            for i, lab in enumerate(label_to_id.keys()):
-                if "brain stem" in lab.lower():
-                    default_idx = i + 1
-                    break
+            default_idx = next((i + 1 for i, lab in enumerate(label_to_id.keys()) if "brain stem" in lab.lower()), 0)
 
-            base_choice = st.selectbox(
-                "Population base = 100%",
-                options=base_options, index=default_idx,
-                help="The region that defines the pyramidal-tract (PT) population — usually "
-                     "'Brain stem (descending)'. Every percentage is taken relative to this."
-            )
+            base_choice = st.selectbox("Population base = 100%", options=base_options, index=default_idx)
             base_id = None if base_choice.startswith("(All L5") else label_to_id[base_choice]
             numerator_ids = [rid for rid in selected_region_ids if rid != base_id]
 
             if not numerator_ids:
-                if not selected_region_ids:
-                    st.info(
-                        "This summary is region-based, so it needs target regions "
-                        "(e.g. GPe, TRN) in the sidebar. For a run without target "
-                        "regions, the **Hemisphere** tab is the one with results."
-                    )
-                else:
-                    st.info("Add at least one more target region (e.g. GPe, TRN) besides the base to build the summary.")
+                st.info("Add at least one more target region besides the base to build the summary.")
             else:
-                summary = build_cortical_summary(results, base_id, numerator_ids,
-                                                 _region_label, criteria_used,
+                summary = build_cortical_summary(results, base_id, numerator_ids, _region_label, criteria_used,
                                                  laterality=saved_laterality)
-                tag = summary['slug']  # pl. 'ep1_br1' - a kritérium a fájlnévben
-                st.info(f"**Projection criteria used:** {summary['criteria_note']}  \n"
-                        f"Recorded in every downloaded file name (`{tag}`).")
-                if summary.get('skipped_no_soma'):
-                    st.caption(
-                        f"{summary['skipped_no_soma']} cell(s) without an identified soma "
-                        f"region were excluded from these tables."
-                    )
+                tag = summary['slug']
+                st.info(
+                    f"**Projection criteria used:** {summary['criteria_note']}\nRecorded in every downloaded file name (`{tag}`).")
 
                 st.markdown("**1. Brain stem = 100% (PT cells)** — *bs_benne*")
                 st.dataframe(summary['benne'], use_container_width=True, hide_index=True)
-                st.download_button(
-                    "⬇ Download bs_benne.csv", summary['benne'].to_csv(index=False).encode('utf-8'),
-                    file_name=f"bs_benne_{tag}.csv", mime="text/csv", key="dl_benne")
+                st.download_button("⬇ Download bs_benne.csv", summary['benne'].to_csv(index=False).encode('utf-8'),
+                                   file_name=f"bs_benne_{tag}.csv", mime="text/csv", key="dl_benne")
 
                 st.markdown("**2. All L5 = 100% (no brain-stem requirement)** — *bs_nelkul*")
                 st.dataframe(summary['nelkul'], use_container_width=True, hide_index=True)
-                st.download_button(
-                    "⬇ Download bs_nelkul.csv", summary['nelkul'].to_csv(index=False).encode('utf-8'),
-                    file_name=f"bs_nelkul_{tag}.csv", mime="text/csv", key="dl_nelkul")
+                st.download_button("⬇ Download bs_nelkul.csv", summary['nelkul'].to_csv(index=False).encode('utf-8'),
+                                   file_name=f"bs_nelkul_{tag}.csv", mime="text/csv", key="dl_nelkul")
 
                 st.markdown("**3. Average axon length in each target (µm), among PT cells**")
                 st.dataframe(summary['axon'], use_container_width=True, hide_index=True)
-                st.download_button(
-                    "⬇ Download axon_length_summary.csv", summary['axon'].to_csv(index=False).encode('utf-8'),
-                    file_name=f"axon_length_summary_{tag}.csv", mime="text/csv", key="dl_axon")
+                st.download_button("⬇ Download axon_length_summary.csv",
+                                   summary['axon'].to_csv(index=False).encode('utf-8'),
+                                   file_name=f"axon_length_summary_{tag}.csv", mime="text/csv", key="dl_axon")
 
                 st.markdown("**4. Category tables with projecting cell IDs**")
-                st.caption(
-                    "Two readings are provided. **GPe / TRN** are *inclusive* — a cell that "
-                    "projects to both appears in both (this matches the "
-                    "\"brain stem = 100%\" percentages above). **GPe only / TRN only** are "
-                    "*exclusive* — the mutually exclusive split used in the original three "
-                    "category files (\"GPe + BS, de a TRN-be nem\"). "
-                    "*only* + *only* + *All targets* + non-projectors = every PT cell."
-                )
-                # Egyedi slugok EGY helyen, a teljes címkelistából. Külön-külön
-                # csonkolva az inkluzív és az exkluzív tábla ugyanazt kapta volna.
                 cat_slugs = category_slugs(list(summary['categories'].keys()))
                 for lab, df in summary['categories'].items():
                     safe = cat_slugs[lab]
-                    with st.expander(f"{lab}  ({int(df.iloc[:, 2].sum())} cells)"):
+                    with st.expander(f"{lab} ({int(df.iloc[:, 2].sum())} cells)"):
                         st.dataframe(df, use_container_width=True, hide_index=True)
-                        st.download_button(
-                            f"⬇ Download {safe}.csv", df.to_csv(index=False).encode('utf-8'),
-                            file_name=f"bs_{safe}_{tag}.csv", mime="text/csv", key=f"dl_cat_{safe}")
+                        st.download_button(f"⬇ Download {safe}.csv", df.to_csv(index=False).encode('utf-8'),
+                                           file_name=f"bs_{safe}_{tag}.csv", mime="text/csv", key=f"dl_cat_{safe}")
 
         with tab_inspector:
             st.markdown("Select a single cell from the processed population to view detailed metrics and its 3D scene.")
@@ -1169,15 +505,14 @@ if 'results' in st.session_state and st.session_state['results']:
 
                 for tr in inspect_result.target_results:
                     cr = saved_criteria.get(tr.region_id, FilterCriteria())
-
-                    is_active_rule = cr.is_active() and filter_was_active
                     meets_rule = cr.meets_thresholds(tr)
+                    is_active = cr.is_active() and filter_was_active
 
-                    if is_active_rule and cr.operator == 'NOT' and meets_rule:
+                    if is_active and cr.operator == 'NOT' and meets_rule:
                         st.markdown(
                             f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Violated NOT rule</span></div>',
                             unsafe_allow_html=True)
-                    elif is_active_rule and cr.operator == 'AND' and not meets_rule:
+                    elif is_active and cr.operator == 'AND' and not meets_rule:
                         st.markdown(
                             f'<div class="result-card filtered-out"><h4>{tr.region_name}</h4><span class="tag-filtered">Did not meet thresholds</span></div>',
                             unsafe_allow_html=True)
@@ -1190,61 +525,28 @@ if 'results' in st.session_state and st.session_state['results']:
                             f'<div class="result-card negative"><h4>{tr.region_name}</h4><span class="tag-no">No projection</span></div>',
                             unsafe_allow_html=True)
 
-                st.markdown("<br>**3D Inspector**", unsafe_allow_html=True)
-                if not inspect_result.coords:
-                    st.caption(
-                        "3D data not available for this cell. Coordinate data is only kept for "
-                        "the first 60 cells to protect memory. Re-run the analysis with a smaller "
-                        "selection to view the 3D plot for this cell."
-                    )
-                else:
+                if inspect_result.coords:
                     with st.spinner(f"Building 3D plot for {inspect_name}..."):
-                        fig_inspect = build_3d_plot(
-                            inspect_result, atlas_matrix, inspect_name,
-                            show_soma_region=show_soma_region,
-                            show_other_regions=show_other_regions,
-                            show_only_target_regions=show_only_target_regions,
-                            region_descendants=descendants_used,
-                            theme=viz_theme, show_brain_outline=show_brain_outline
-                        )
-                    st.plotly_chart(fig_inspect, use_container_width=True)
+                        st.plotly_chart(build_3d_plot(inspect_result, atlas_matrix, inspect_name, show_soma_region,
+                                                      show_other_regions, show_only_target_regions, descendants_used,
+                                                      viz_theme, show_brain_outline), use_container_width=True)
 
         with tab_3d_multi:
             st.caption("Joint rendering of all processed cells. Each cell gets its own colour for easy distinction.")
+            show_only_valid = st.toggle("Show only passing cells", value=True)
 
-            # --- ÚJ: Kapcsoló a csak validált sejtekhez ---
-            show_only_valid = st.toggle(
-                "Show only passing cells",
-                value=True,
-                help="Only display cells that passed the active filters (or have at least one projection if no filter is set)."
-            )
-
-            # Sejtek válogatása a kapcsoló állapota alapján
             combined_results = []
             for n, r in results:
-                if not r.coords:
-                    continue
-
+                if not r.coords: continue
                 if show_only_valid:
-                    # Ha volt aktív szűrő, akkor a passes_filter-t nézzük
-                    if filter_was_active and not r.passes_filter:
-                        continue
-                    # Ha nem volt aktív szűrő, akkor azt nézzük, hogy vetít-e egyáltalán valahova
-                    if not filter_was_active and not any(tr.projects_here for tr in r.target_results):
-                        continue
-
+                    if filter_was_active and not r.passes_filter: continue
+                    if not filter_was_active and not any(tr.projects_here for tr in r.target_results): continue
                 combined_results.append((n, r))
-            # ----------------------------------------------
 
             if not combined_results:
                 st.warning("No cells match the current criteria for 3D rendering.")
             elif st.button(f"Generate Combined Scene ({len(combined_results)} cells)", type="primary"):
                 with st.spinner(f"Rendering {len(combined_results)} cells together..."):
-                    fig_multi = build_3d_plot_multi(
-                        combined_results, atlas_matrix, selected_region_ids,
-                        show_target_regions=True,
-                        show_only_target_regions=show_only_target_regions,
-                        region_descendants=descendants_used,
-                        theme=viz_theme, show_brain_outline=show_brain_outline
-                    )
-                st.plotly_chart(fig_multi, use_container_width=True)
+                    st.plotly_chart(build_3d_plot_multi(combined_results, atlas_matrix, selected_region_ids, True,
+                                                        show_only_target_regions, descendants_used, viz_theme,
+                                                        show_brain_outline), use_container_width=True)

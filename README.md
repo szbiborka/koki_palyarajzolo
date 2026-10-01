@@ -22,6 +22,8 @@ Load any SWC file and get a full breakdown per target region: how many endpoints
 ### Batch analysis
 Select any number of cells at once and run the analysis across all of them. Results appear as a sortable table (one row per cell, one column set per region) that you can download as a CSV for further work in Excel or Python.
 
+Cells can be chosen three ways: all cells matching the sidebar filters, picked one by one, or **pasted as a list** — any separator works (comma, space, new line), and so does the run-together `221044\016.swc221044\019.swc` form copied out of the cell picker. A pasted list is analysed exactly as given; the soma, class and verdict filters do not apply to it.
+
 ### One projection criterion per region
 Each target region has **one** set of numbers that defines what counts as a projection there:
 - minimum number of axon endpoints in the region — default **1**
@@ -49,11 +51,35 @@ These use the strict projection definition (endpoint **and** branch) directly an
 ### Hemisphere (laterality)
 The Allen atlas gives **both hemispheres the same region id**, so "projects to GPe" would otherwise count the opposite side as well. Since L5 pyramidal-tract cells project essentially ipsilaterally, counting both sides can only inflate the GPe/TRN numbers. A **Hemisphere** selector offers *both* (the previous behaviour, and the default so earlier results still reproduce), *ipsilateral only*, or *contralateral only*; the side is decided against the midline of the medio-lateral axis, relative to the soma. In the ipsi/contra modes **every** per-region number follows the chosen side — endpoints, branch points and axon length — and the endpoint share is computed against the endpoints *on that side* (so "≥2.5% of endpoints in the thalamus" means 2.5% of the ipsilateral endpoints in ipsilateral mode). The ipsi/contra endpoint split is exported for every region regardless of the mode, so the size of the contralateral contribution is always visible.
 
+The selector is the default for every region; **each region can override it** in its filter panel, so e.g. the GPe can be evaluated ipsilaterally and the cortex contralaterally in the same run. The side used is exported per region (`..._side`) and written into the criterion text and the summary file names.
+
+**Exclude contralaterally projecting cells** is a whole-cell rule on top of the region rules: a cell fails the filter when more than the given share of its endpoints (default 0%) lies on the opposite hemisphere. Cells whose side cannot be decided (no soma, soma on the midline) are kept.
+
+The supervisor's three-criteria query — *projects to the GPe, does not project contralaterally, and x% of its endpoints are in the thalamus* — is set up as: GPe **Required (AND)**; tick *Exclude contralaterally projecting cells*; add Thalamus with *Min. endpoint share* = x% and **Required (AND)** (to select the L6-like cells for inspection) or **Excluded (NOT)** (to remove them). Tick *Only cells that pass the filter* on the Cortical Summary tab to get the tables for that population.
+
 ### Inclusive vs exclusive categories
 The summary reports each target twice. **`GPe n` / `TRN n`** are *inclusive* — a cell projecting to both is counted in both, which is what the "brain stem = 100%" percentages describe. **`GPe only n` / `TRN only n`** are *exclusive* — a cell counts only if it projects to that target and to none of the others, which is the mutually exclusive split of the original three category files. Both are shown side by side because mixing them up makes GPe and TRN look inflated; `only` + `only` + `All targets` + non-projectors accounts for every cell in the base population.
 
 ### Soma region filtering
 With thousands of SWC files, scrolling through a list is not practical. Type part of a region name — "motor", "thalamus", "striatum" — and the file list instantly narrows to only cells whose soma is located in a matching region. This is powered by a one-time index that scans all SWC files on first use and saves the result; subsequent loads are instant.
+
+### Cell types from the database (projection class, Cre line)
+The SWC files carry no metadata, but the database publishes it per neuron: its own soma region, the Cre line, and a **projection class** — **IT** (intratelencephalic), **PT** (pyramidal tract, L5, subcerebral) or **CT** (corticothalamic, L6), with sub-classes such as `PT-18`. With `adatfajlok/database_metadata/cortex_neuron_info.json` in place (see *Setup*), the sidebar can filter by class and Cre line, the single-cell views show them, and the batch export gets `projection_class`, `projection_subclass`, `cre_line` and `db_soma_region` columns.
+
+The class is assigned from the axon, not from the soma position, which makes it the tool against the two layer errors of the database:
+- **L5 cells registered into L6.** A PT cell whose soma sits on the L5/L6 border can get an "L6a" region, although it descends to the brain stem — something L6 cells do not do. Filter by class **PT** instead of by "layer 5", and/or turn on **Correct soma layer by projection class**: the summaries then count such a cell under the L5 region of the same cortical area (PT in L4/L6 → L5, CT in L5 → L6a; only the adjacent layer is corrected — a PT cell in L2/3 is flagged, not moved). The atlas region is still exported as `soma_region`, the corrected one as `summary_soma_region`.
+- **Shifted L6 (CT) cells.** A slightly mis-registered L6 CT cell lands its TRN arbor in the GPe and its thalamic arbor in the TRN, producing false GPe/TRN projections. These cells are CT in the database.
+
+The *Population Statistics* tab shows the soma layer × class table of the batch, so the suspects are visible at a glance.
+
+### Manual verdicts (curation)
+Cells checked by hand get a **verdict** — *Shifted L6*, *Actually L5*, *Cortico-cortical (IT)*, *Other problem* or *Verified OK* — stored in `curation/manual_labels.csv` (versioned with the code). The sidebar excludes *Shifted L6* and *Other problem* by default, so a cell has to be judged only once. Verdicts are set in the single-cell views (*Manual verdict for this cell*), or imported from a colour-coded Excel sheet:
+
+```bash
+python scripts/import_excel_labels.py "poszter_tablak.xlsx" 05_L6a_GPe
+```
+
+The import reads the font colour of every cell ID in the *Projecting Cell IDs* column (legend at the bottom of the 05_L6a_GPe sheet; uncoloured = verified). The 198 verdicts of that sheet are already imported.
 
 ### Interactive 3D visualization (Plotly, fully browser-native)
 For any single cell or a combined batch, open an interactive 3D viewer directly in the browser tab. No installation, no desktop window, no VTK.js issues — the viewer works on any machine that can open the Streamlit app.
@@ -67,6 +93,8 @@ The 3D scene shows:
 For batch mode, each cell gets its own color (soma + full axon tree) so individual neurons stay distinguishable in the combined view.
 
 The **Axon-in-region view** toggle hides every axon segment outside the target regions (and the soma region), so only the axon that actually runs through e.g. the GPe is drawn next to the region mesh — useful to see which sub-territory a group of cells innervates.
+
+**Show projection points** hides the diamond markers. **Camera view** switches between the free, rotatable view and fixed orthographic **top (dorsal)**, **side (lateral)** and **front (anterior)** views; the axes are labelled AP / DV / ML.
 
 ---
 
@@ -104,9 +132,12 @@ palyakoveto/
 ├── core/
 │   ├── loader.py        — data loading: atlas, SWC files, dictionary, soma index
 │   ├── analysis.py      — science logic: projection detection, filtering, summaries
+│   ├── cell_info.py     — database metadata, manual verdicts, cell lists, layer correction
 │   └── visualization.py — 3D Plotly figure construction
+├── curation/            — manual verdicts per cell (manual_labels.csv)
+├── docs/DOKUMENTACIO.md — change log, to-improve status, how the logic works (Hungarian)
 ├── tests/               — regression tests on synthetic mini-atlases (no data needed)
-├── scripts/             — one-off diagnostics (e.g. what the descending brain stem covers)
+├── scripts/             — diagnostics and the Excel verdict import
 ├── dolgozat/            — thesis drafts (LaTeX)
 └── adatfajlok/          — local data: atlas, dictionary, SWC files (not in git)
 ```
@@ -140,6 +171,12 @@ adatfajlok/data_v2/<mouse>/<cell>.swc
 ```
 
 To use other locations, set the `PALYAKOVETO_DATA_DIR`, `ATLAS_PATH` and `DICTIONARY_PATH` environment variables (see below) or edit `config.py`.
+
+Optional, for the cell-type features — the database's neuron metadata (~7.5 MB):
+
+```bash
+curl -o adatfajlok/database_metadata/cortex_neuron_info.json "https://mouse.digital-brain.cn/projectome/2/srv//info/mouse/cortex/mouse.neuron.info.json"
+```
 
 ### Running locally
 
@@ -206,6 +243,35 @@ The first run builds a CSV index mapping every SWC file to the atlas region of i
 
 **Axon length per region**
 Each axon segment is sampled every half voxel (12.5 µm), so a segment that crosses a region boundary is split proportionally between the regions. Region ids are compacted before summing — Allen ids go up to ~6·10⁸, and indexing an array by raw id would cost gigabytes per cell.
+
+---
+
+## Data notes
+
+Checked against the database metadata on 2026-10-01.
+
+**Which part of the database we have.** The local `data_v2` holds 12,264 neurons: every sample of the *whole cortex* dataset from 212064 onwards, with identical per-sample counts. The cortex metadata lists 18,621 neurons; the missing 6,357 are the older samples (17099–201787, the earlier prefrontal datasets, all C57BL/6J). The site as a whole holds 46,175 neurons across all datasets (hippocampus, hypothalamus, …). The missing data has to be downloaded from BSDS.
+
+**Why "layer 5" and "cell type" searches give different cells.** They are independent labels in the database. The layer is where the soma landed after registration to the atlas; the class (IT / PT / CT) comes from the projection pattern, and the Cre line from the mouse. Across all 18,621 cortex neurons:
+
+| Soma layer | CT | IT | PT |
+|---|---|---|---|
+| 5 | 866 | 3,791 | 3,172 |
+| 6a | 1,477 | 505 | 159 |
+
+So 866 CT cells sit in "layer 5", and 159 PT cells in "layer 6a". The Cre lines are not clean either: Rbp4 (an L5 line) contains 704 IT cells. Our own soma assignment agrees with the database's region for 93.8% of the local cells, so the difference is not ours.
+
+**The manual 05_L6a_GPe check vs the database class** (198 cells):
+
+| Manual verdict | Cells | CT | PT | IT |
+|---|---|---|---|---|
+| Shifted L6 | 123 | 121 | 2 | 0 |
+| Actually L5 | 27 | 3 | 24 | 0 |
+| Cortico-cortical | 12 | 2 | 1 | 9 |
+| Verified (genuine GPe) | 23 | 21 | 2 | 0 |
+| Other problem | 13 | 3 | 6 | 4 |
+
+The class reproduces "shifted L6" (98% CT) and "actually L5" (89% PT). It cannot, however, separate shifted L6 cells from the verified genuine L6 → GPe cells: both are CT, both have ~55% of their endpoints in the thalamus, and their GPe points lie equally shallow in the GPe. The GPe points of shifted cells are closer to the TRN/thalamus (median 190 µm vs 430 µm), but the distributions overlap too much for a reliable cut-off. That decision therefore stays manual — but made once, in `curation/manual_labels.csv`.
 
 ---
 

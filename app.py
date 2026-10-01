@@ -7,6 +7,11 @@ import streamlit as st
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER, BRAINSTEM_MOTOR_ID,
     VIZ_THEMES, DEFAULT_VIZ_THEME, LATERALITY_MODES, DEFAULT_LATERALITY,
+    DATABASE_METADATA_PATH, CURATION_PATH, CURATION_LABELS, DEFAULT_EXCLUDED_LABELS,
+)
+from core.cell_info import (
+    load_database_metadata, load_curation, save_curation, set_curation_label,
+    parse_cell_list, filter_cells, attach_cell_info, cell_key, soma_layer, layer_mismatch,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc, region_name_map,
@@ -36,6 +41,55 @@ RULE_OPERATORS = {
     "Optional (OR)": "OR",
     "Observe only": "NONE",
 }
+# Régiónkénti félteke: None = a futás alapértelmezése (a Hemisphere választó)
+REGION_SIDES = {"Run default": None, "Both sides": 'both', "Ipsilateral": 'ipsi', "Contralateral": 'contra'}
+CAMERA_LABELS = {"Free (rotate)": 'free', "Top (dorsal)": 'top', "Side (lateral)": 'side', "Front (anterior)": 'front'}
+BATCH_METHODS = ["Analyze ALL matched cells", "Select specific cells manually", "Paste a list of cells"]
+
+
+@st.cache_data(show_spinner="Loading database metadata...")
+def _database_metadata():
+    return load_database_metadata(DATABASE_METADATA_PATH)
+
+
+@st.cache_data(show_spinner=False)
+def _curation():
+    return load_curation(CURATION_PATH)
+
+
+def _cell_info_block(result) -> None:
+    """Az adatbázis és a kézi ellenőrzés információi egy sejtről."""
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Projection class (database)", result.projection_subclass or "—")
+    c2.metric("Cre line", result.cre_line or "—")
+    c3.metric("Manual verdict", CURATION_LABELS.get(result.curation_label, "—") if result.curation_label else "—")
+    notes = []
+    if result.db_soma_region:
+        notes.append(f"Database soma region: **{result.db_soma_region}**")
+    if layer_mismatch(result.soma_region_name, result.projection_class):
+        notes.append(f"⚠️ Soma layer ({soma_layer(result.soma_region_name)}) does not fit the "
+                     f"{result.projection_class} class")
+    if result.group_region != result.soma_region_name:
+        notes.append(f"Counted in summaries as: **{result.group_region}**")
+    if notes:
+        st.caption(" · ".join(notes))
+
+
+def _curation_editor(cell_name: str, result) -> None:
+    """A sejt kézi ítéletének megadása; a kurációs fájlba íródik, és a következő futásoktól érvényes."""
+    with st.expander("Manual verdict for this cell"):
+        options = ["(none)"] + list(CURATION_LABELS)
+        current = result.curation_label if result.curation_label in CURATION_LABELS else "(none)"
+        key = cell_key(cell_name) or cell_name
+        label = st.selectbox("Verdict", options, index=options.index(current), key=f"verdict_{key}",
+                             format_func=lambda k: CURATION_LABELS.get(k, k))
+        note = st.text_input("Note", key=f"verdict_note_{key}")
+        if st.button("Save verdict", key=f"verdict_save_{key}"):
+            new_label = None if label == "(none)" else label
+            save_curation(set_curation_label(_curation(), key, new_label, source='app', note=note), CURATION_PATH)
+            _curation.clear()
+            result.curation_label = new_label
+            st.success(f"Saved to `{CURATION_PATH}`. Exclusions by verdict apply from the next run.")
 
 
 def _region_card(tr: RegionResult, crit: FilterCriteria) -> None:
@@ -72,8 +126,11 @@ except FileNotFoundError as e:
     st.stop()
 
 region_names = region_name_map(dictionary)
+names_by_lower = {name.lower(): name for name in region_names.values()}
 region_options = build_region_search_options(region_names, dictionary)
 all_swc = get_all_swc_files(BASE_DATA_DIR)
+metadata = _database_metadata()
+curation = _curation()
 
 # SIDEBAR
 with st.sidebar:
@@ -102,7 +159,15 @@ with st.sidebar:
         horizontal=True, key="laterality_mode", label_visibility="collapsed",
     )
     laterality, lat_help = LATERALITY_MODES[lat_choice]
-    st.caption(f"➜ {lat_help}")
+    st.caption(f"➜ {lat_help} Default for every region; can be overridden per region below.")
+    exclude_contra = st.checkbox(
+        "Exclude contralaterally projecting cells", key="exclude_contra",
+        help="Whole-cell rule: a cell fails the filter if more than the given share of its endpoints "
+             "lies on the opposite hemisphere. Cells without a decidable side are kept.")
+    max_contra_pct = None
+    if exclude_contra:
+        max_contra_pct = st.number_input("Max. contralateral endpoints (%)", min_value=0.0, max_value=100.0,
+                                         value=0.0, step=0.5, key="max_contra_pct")
 
     st.divider()
 
@@ -127,6 +192,8 @@ with st.sidebar:
             op = RULE_OPERATORS[rule_label]
             if op == 'NONE':
                 st.caption("👁 Observe only — reported, but does not filter any cells.")
+            side_label = st.radio("Hemisphere for this region", options=list(REGION_SIDES), horizontal=True,
+                                  key=f"filter_side_{region_id}")
 
             min_ep = st.number_input("Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'],
                                      step=1, key=f"filter_ep_{region_id}")
@@ -144,8 +211,9 @@ with st.sidebar:
 
             criteria_per_region[region_id] = FilterCriteria(
                 min_endpoints=int(min_ep), min_branch_points=int(min_br),
-                min_axon_length_um=float(min_len), min_endpoint_fraction=float(min_ep_pct) / 100.0, operator=op
-            )
+                min_axon_length_um=float(min_len), min_endpoint_fraction=float(min_ep_pct) / 100.0,
+                operator=op, side=REGION_SIDES[side_label],
+            ).effective(laterality)
             st.caption(f"➜ Counts as projecting to {short_name} when: "
                        f"**{criteria_per_region[region_id].describe()}**")
 
@@ -153,6 +221,7 @@ with st.sidebar:
 
     st.markdown("**Cell Files (SWC)**", help="Select the neurons to analyze.")
     selected_cells: dict[str, str] = {}  # {megjelenítési név: teljes útvonal}
+    correct_layers = False
     if not all_swc:
         st.warning(f"No SWC files found in:\n`{BASE_DATA_DIR}`")
     else:
@@ -179,6 +248,33 @@ with st.sidebar:
                                         key="soma_search")
             filtered_swc = filter_swc_by_soma_region(all_swc, soma_index, soma_search)
 
+        selected_classes, selected_lines = [], []
+        if metadata is not None:
+            selected_classes = st.multiselect(
+                "Projection class (database)", options=sorted(metadata['projection_class'].dropna().unique()),
+                key="class_filter",
+                help="The database's own cell type, assigned from the projection pattern: IT = intratelencephalic, "
+                     "PT = pyramidal tract (L5, subcerebral), CT = corticothalamic (L6). Independent of the "
+                     "soma layer — use it to catch L5 PT cells whose soma was registered into L6.")
+            selected_lines = st.multiselect("Cre line (database)",
+                                            options=sorted(metadata['cre_line'].dropna().unique()), key="line_filter")
+        else:
+            st.caption(f"No database metadata at `{DATABASE_METADATA_PATH}` — cell-type filters are off.")
+        excluded_labels = []
+        if not curation.empty:
+            excluded_labels = st.multiselect(
+                "Exclude manually labelled cells", options=list(CURATION_LABELS),
+                default=DEFAULT_EXCLUDED_LABELS, format_func=CURATION_LABELS.get, key="excluded_labels",
+                help=f"Verdicts from `{CURATION_PATH}` ({len(curation)} cells).")
+        filtered_swc = filter_cells(filtered_swc, metadata, selected_classes, selected_lines,
+                                    curation, excluded_labels)
+        correct_layers = st.toggle(
+            "Correct soma layer by projection class", value=False, key="correct_layers",
+            disabled=metadata is None and curation.empty,
+            help="Summaries count a PT cell whose soma sits in L4/L6 under the L5 region of the same area "
+                 "(and a CT cell in L5 under L6a). A manual 'Actually L5' verdict overrides the class. "
+                 "The atlas region is still exported as 'soma_region'.")
+
         analysis_mode = st.radio("Analysis mode", options=["Single cell", "Batch (multiple cells)"],
                                  horizontal=True, key="analysis_mode")
 
@@ -188,18 +284,30 @@ with st.sidebar:
                 selected_cells = {selected_name: filtered_swc[selected_name]}
         else:
             st.markdown(f"**{len(filtered_swc)} cells available for batch analysis.**")
-            batch_method = st.radio("Selection method",
-                                    options=["Analyze ALL matched cells", "Select specific cells manually"],
-                                    horizontal=True, label_visibility="collapsed")
-            if batch_method == "Analyze ALL matched cells":
+            batch_method = st.radio("Selection method", options=BATCH_METHODS, key="batch_method",
+                                    label_visibility="collapsed")
+            if batch_method == BATCH_METHODS[0]:
                 selected_cells = dict(filtered_swc)
                 st.info(f"Ready to analyze all **{len(selected_cells)}** cells. Click 'Run Analysis' below.")
-            else:
+            elif batch_method == BATCH_METHODS[1]:
                 selected_names = st.multiselect("Select specific cells", options=list(filtered_swc.keys()),
                                                 default=[], key="batch_selector")
                 selected_cells = {name: filtered_swc[name] for name in selected_names}
                 if not selected_cells:
                     st.warning("Please select at least one cell from the dropdown.")
+            else:
+                pasted = st.text_area("Cells (any separator)", key="pasted_cells", height=120,
+                                      placeholder="221044\\016.swc, 221044_019, 233284/066 ...",
+                                      help="Exactly these cells are analyzed; the soma, class and verdict "
+                                           "filters above do not apply to a pasted list.")
+                wanted = parse_cell_list(pasted)
+                selected_cells = {name: all_swc[name] for name in wanted if name in all_swc}
+                missing = [name for name in wanted if name not in all_swc]
+                if wanted:
+                    st.caption(f"{len(selected_cells)} of {len(wanted)} cells found.")
+                if missing:
+                    st.warning(f"Not found in the data folder: {', '.join(missing[:20])}"
+                               f"{' …' if len(missing) > 20 else ''}")
 
     st.divider()
 
@@ -213,6 +321,9 @@ with st.sidebar:
     show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
     show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
     show_only_target_regions = st.toggle("Axon-in-region view", value=False, key="toggle_exclusive")
+    show_projection_points = st.toggle("Show projection points", value=True, key="toggle_points",
+                                       help="The diamond markers on endpoints and branch points.")
+    camera_view = CAMERA_LABELS[st.selectbox("Camera view", options=list(CAMERA_LABELS), key="camera_view")]
 
 # MAIN CONTENT
 if not selected_cells:
@@ -226,7 +337,7 @@ if not selected_cells:
     st.info("**Welcome.** Select one or more cell files from the sidebar to begin.")
     st.stop()
 
-any_filter_active = any(c.is_active() for c in criteria_per_region.values())
+any_filter_active = any(c.is_active() for c in criteria_per_region.values()) or max_contra_pct is not None
 n_selected = len(selected_cells)
 _, col_btn, _ = st.columns([1, 2, 1])
 with col_btn:
@@ -244,13 +355,16 @@ if run_button:
         'criteria': criteria_per_region,
         'descendants': region_descendants,
         'laterality': laterality,
+        'max_contra_pct': max_contra_pct,
+        'correct_layers': correct_layers,
     }
 
     def process_single_cell(cell_name: str, filepath: str):
         try:
             result = run_analysis(load_swc(filepath), atlas_matrix, region_names, selected_region_ids,
                                   region_descendants, criteria_per_region, laterality)
-            return cell_name, apply_filter(result, criteria_per_region), None
+            attach_cell_info(result, cell_name, metadata, curation, names_by_lower, correct_layers)
+            return cell_name, apply_filter(result, criteria_per_region, max_contra_pct), None
         except Exception as e:
             return cell_name, None, str(e)
 
@@ -283,7 +397,12 @@ if results:
     run_region_ids = run['region_ids']
     criteria_used = run['criteria']
     descendants_used = run['descendants']
-    filter_was_active = any(c.is_active() for c in criteria_used.values())
+    filter_was_active = (any(c.is_active() for c in criteria_used.values())
+                         or run['max_contra_pct'] is not None)
+    plot_options = dict(show_soma_region=show_soma_region, show_other_regions=show_other_regions,
+                        show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
+                        theme=viz_theme, show_brain_outline=show_brain_outline,
+                        show_projection_points=show_projection_points, view=camera_view)
 
     if run_region_ids != selected_region_ids:
         st.warning("The target regions changed since the last run — the results below still show the "
@@ -310,6 +429,8 @@ if results:
             n_confirmed = sum(1 for tr in result.target_results if tr.projects_here)
             m2.metric("Confirmed projections", f"{n_confirmed} / {len(result.target_results)} targets")
             m3.metric("Total axon length", f"{result.total_axon_length_um:,.0f} µm")
+            _cell_info_block(result)
+            _curation_editor(cell_name, result)
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Hemisphere")
@@ -343,12 +464,7 @@ if results:
             st.info("**Tip:** Use the left mouse button to rotate, the right button to pan, "
                     "and the scroll wheel to zoom.")
             with st.spinner("Building interactive 3D plot..."):
-                fig = build_3d_plot(
-                    result, atlas_matrix, cell_name, show_soma_region=show_soma_region,
-                    show_other_regions=show_other_regions,
-                    show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
-                    theme=viz_theme, show_brain_outline=show_brain_outline
-                )
+                fig = build_3d_plot(result, atlas_matrix, cell_name, **plot_options)
             st.plotly_chart(fig)
 
     # BATCH VIEW
@@ -377,6 +493,15 @@ if results:
             if not soma_df.empty:
                 st.download_button("Download Soma Region Summary (CSV)", data=_csv(soma_df),
                                    file_name="soma_region_summary.csv", mime="text/csv", key="download_soma_summary")
+
+            if any(r.projection_class for _, r in results):
+                with st.expander("Soma layer vs projection class (database)"):
+                    st.caption("Rows: the soma's layer in the atlas; columns: the database's projection class. "
+                               "PT cells outside L5 and CT cells outside L6 are the layer-assignment suspects.")
+                    st.dataframe(pd.crosstab(
+                        pd.Series([soma_layer(r.soma_region_name) or "—" for _, r in results], name="Soma layer"),
+                        pd.Series([r.projection_class or "—" for _, r in results], name="Class"),
+                        margins=True))
 
             st.markdown("<br>", unsafe_allow_html=True)
             section_header("Detailed Batch Data")
@@ -441,13 +566,21 @@ if results:
             base_choice = st.selectbox("Population base = 100%", options=base_options, index=default_idx)
             base_id = label_to_id.get(base_choice)  # None az "All L5" opciónál
             numerator_ids = [rid for rid in run_region_ids if rid != base_id]
+            only_passing = st.checkbox(
+                "Only cells that pass the filter", value=False, disabled=not filter_was_active,
+                help="By default the tables use every analysed cell and ignore the AND/NOT/OR rules. "
+                     "Tick this to build them from the filtered population only (e.g. after excluding "
+                     "contralateral projectors or thalamus-heavy L6 cells).")
+            summary_results = [(n, r) for n, r in results if r.passes_filter] if only_passing else results
 
             if not numerator_ids:
                 st.info("Add at least one more target region besides the base to build the summary.")
             else:
-                summary = build_cortical_summary(results, base_id, numerator_ids, _summary_label, criteria_used,
-                                                 laterality=run['laterality'])
-                tag = summary['slug']
+                summary = build_cortical_summary(summary_results, base_id, numerator_ids, _summary_label,
+                                                 criteria_used, laterality=run['laterality'])
+                tag = summary['slug'] + ('_filtered' if only_passing else '')
+                if run['correct_layers']:
+                    st.caption("Soma regions are layer-corrected by projection class.")
                 st.info(f"**Projection criteria used:** {summary['criteria_note']}\n\n"
                         f"Recorded in every downloaded file name (`{tag}`).")
                 if summary['skipped_no_soma_region']:
@@ -486,14 +619,13 @@ if results:
                                         label_visibility="collapsed")
             if inspect_name:
                 inspect_result = results_by_name[inspect_name]
+                _cell_info_block(inspect_result)
+                _curation_editor(inspect_name, inspect_result)
                 for tr in inspect_result.target_results:
                     _region_card(tr, criteria_used.get(tr.region_id, FilterCriteria()))
 
                 with st.spinner(f"Building 3D plot for {inspect_name}..."):
-                    st.plotly_chart(build_3d_plot(
-                        inspect_result, atlas_matrix, inspect_name, show_soma_region=show_soma_region,
-                        show_other_regions=show_other_regions, show_only_target_regions=show_only_target_regions,
-                        region_descendants=descendants_used, theme=viz_theme, show_brain_outline=show_brain_outline))
+                    st.plotly_chart(build_3d_plot(inspect_result, atlas_matrix, inspect_name, **plot_options))
 
         with tab_3d_multi:
             st.caption("Joint rendering of all processed cells. Each cell gets its own colour for easy distinction.")
@@ -514,4 +646,4 @@ if results:
                     st.plotly_chart(build_3d_plot_multi(
                         combined_results, atlas_matrix, run_region_ids, show_target_regions=True,
                         show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
-                        theme=viz_theme, show_brain_outline=show_brain_outline))
+                        theme=viz_theme, show_brain_outline=show_brain_outline, view=camera_view))

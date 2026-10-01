@@ -3,7 +3,7 @@
 # =============================================================================
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,8 @@ from config import (
 _SAMPLES_PER_VOXEL = 2
 _MAX_SAMPLES_PER_SEGMENT = 256
 
+_SIDE_NOTES = {'ipsi': 'ipsilateral only', 'contra': 'contralateral only'}
+
 
 @dataclass
 class RegionResult:
@@ -33,6 +35,7 @@ class RegionResult:
     endpoint_count_contra: int = 0
     branch_point_count_ipsi: int = 0
     branch_point_count_contra: int = 0
+    side: str = 'both'  # melyik féltekén számoltuk a fenti értékeket
 
 
 @dataclass
@@ -55,12 +58,17 @@ class FilterCriteria:
         'NOT'  = ide nem vetíthet
         'OR'   = opcionális (legalább egy OR-régió teljesüljön)
         'NONE' = csak megfigyelés: a számai megjelennek, de nem szűr
+
+    A side régiónként mondja meg, melyik félteke számít ('both' / 'ipsi' /
+    'contra'); None = a futás alapértelmezése. Így pl. a GPe ipszilaterálisan,
+    a kéreg kontralaterálisan vizsgálható ugyanabban a futásban.
     """
     min_endpoints: int = DEFAULT_FILTER['min_endpoints']
     min_branch_points: int = DEFAULT_FILTER['min_branch_points']
     min_axon_length_um: float = DEFAULT_FILTER['min_axon_length_um']
     min_endpoint_fraction: float = DEFAULT_FILTER['min_endpoint_fraction']
     operator: str = 'AND'
+    side: str | None = None
 
     def is_projection(self, endpoint_count: int, branch_point_count: int,
                       axon_length_um: float, endpoint_fraction: float) -> bool:
@@ -90,16 +98,25 @@ class FilterCriteria:
             parts.append(f"≥{self.min_axon_length_um:g} µm axon")
         if self.min_endpoint_fraction > 0:
             parts.append(f"≥{self.min_endpoint_fraction * 100:g}% endpoint share")
-        return " AND ".join(parts) if parts else "any axon presence"
+        text = " AND ".join(parts) if parts else "any axon presence"
+        if self.side in _SIDE_NOTES:
+            text += f" ({_SIDE_NOTES[self.side]})"
+        return text
 
     def slug(self) -> str:
-        """Fájlnévbe illeszthető azonosító, pl. 'ep1_br1' vagy 'ep1_br1_len100_frac2.5'."""
+        """Fájlnévbe illeszthető azonosító, pl. 'ep1_br1' vagy 'ep1_br1_len100_frac2.5_ipsi'."""
         slug = f"ep{self.min_endpoints}_br{self.min_branch_points}"
         if self.min_axon_length_um > 0:
             slug += f"_len{self.min_axon_length_um:g}"
         if self.min_endpoint_fraction > 0:
             slug += f"_frac{self.min_endpoint_fraction * 100:g}"
+        if self.side in _SIDE_NOTES:
+            slug += f"_{self.side}"
         return slug
+
+    def effective(self, default_side: str) -> 'FilterCriteria':
+        """Ugyanez a kritérium, a side kitöltve a futás alapértelmezésével."""
+        return replace(self, side=self.side or default_side)
 
 
 @dataclass
@@ -122,6 +139,18 @@ class CellAnalysisResult:
     axon_length_ipsi_um: float = 0.0
     axon_length_contra_um: float = 0.0
     axon_length_midline_um: float = 0.0
+    # Sejt-információk a rekonstrukción kívülről (core/cell_info.py tölti ki)
+    projection_class: str | None = None      # adatbázis: IT / PT / CT
+    projection_subclass: str | None = None   # adatbázis: pl. 'PT-18'
+    cre_line: str | None = None
+    db_soma_region: str | None = None        # az adatbázis saját soma-régiója
+    curation_label: str | None = None        # kézi ítélet (CURATION_LABELS kulcsa)
+    summary_soma_region: str | None = None   # réteg-korrigált régió az összesítőkhöz
+
+    @property
+    def group_region(self) -> str:
+        """Az összesítő táblák soma-csoportja: a réteg-korrigált régió, ha van, különben az atlaszé."""
+        return self.summary_soma_region or self.soma_region_name
 
     @property
     def soma_is_border(self) -> bool:
@@ -292,22 +321,34 @@ def run_analysis(
         endpoints_ipsi_total = endpoints_contra_total = 0
         axon_length_ipsi_um = axon_length_contra_um = axon_length_midline_um = 0.0
 
-    # --- A kért oldaliság szerinti szűrés a régiós számokhoz ---
-    def _side_mask(sides: np.ndarray) -> np.ndarray:
+    # --- Oldaliság szerinti szűrés a régiós számokhoz (régiónként eltérhet) ---
+    def _side_mask(sides: np.ndarray, side: str) -> np.ndarray:
         # Soma nélkül (vagy középvonali sománál) nincs mihez viszonyítani, ezért
         # nem szűrünk oldalra - különben némán nullázódna a sejt.
-        if laterality == 'both' or soma_side == 0:
+        if side == 'both' or soma_side == 0:
             return np.ones(len(sides), dtype=bool)
-        if laterality == 'ipsi':
+        if side == 'ipsi':
             return sides == soma_side
         return sides == -soma_side
 
-    ep_keep, branch_keep, samp_keep = _side_mask(ep_side), _side_mask(branch_side), _side_mask(samp_side)
-    endpoint_denominator = int(ep_keep.sum())
-    # Régió-ID-k tömörítése: az Allen ID-k 6*10^8-ig mennek, egy közvetlen
-    # bincount sejtenként több GB memóriát foglalna.
-    length_region_ids, inverse = np.unique(samp_region[samp_keep], return_inverse=True)
-    length_by_region = np.bincount(inverse, weights=samp_len[samp_keep], minlength=len(length_region_ids))
+    side_views: dict[str, dict] = {}
+
+    def _side_view(side: str) -> dict:
+        """Az adott oldalra szűrt végpontok, elágazások és régiónkénti axonhossz (oldalanként egyszer számolva)."""
+        if side not in side_views:
+            samp_keep = _side_mask(samp_side, side)
+            # Régió-ID-k tömörítése: az Allen ID-k 6*10^8-ig mennek, egy közvetlen
+            # bincount sejtenként több GB memóriát foglalna.
+            length_ids, inverse = np.unique(samp_region[samp_keep], return_inverse=True)
+            ep_keep = _side_mask(ep_side, side)
+            side_views[side] = {
+                'ep_keep': ep_keep,
+                'branch_keep': _side_mask(branch_side, side),
+                'endpoint_denominator': int(ep_keep.sum()),
+                'length_ids': length_ids,
+                'length': np.bincount(inverse, weights=samp_len[samp_keep], minlength=len(length_ids)),
+            }
+        return side_views[side]
 
     def _match_ids(region_id: int) -> np.ndarray:
         """A régióhoz tartozó atlasz-ID-k (önmaga + leszármazottai, ha van hierarchia)."""
@@ -315,13 +356,16 @@ def run_analysis(
         return np.fromiter((int(v) for v in ids_), dtype=int) if ids_ else np.array([int(region_id)])
 
     def _build_region_result(region_id: int) -> RegionResult:
+        criteria = criteria_per_region.get(int(region_id), FilterCriteria())
+        side = criteria.side or laterality
+        view = _side_view(side)
         match = _match_ids(region_id)
         ep_in, br_in = np.isin(ep_regions, match), np.isin(branch_regions, match)
-        ep_count = int((ep_in & ep_keep).sum())
-        br_count = int((br_in & branch_keep).sum())
-        axon_len = float(length_by_region[np.isin(length_region_ids, match)].sum())
-        fraction = ep_count / endpoint_denominator if endpoint_denominator > 0 else 0.0
-        criteria = criteria_per_region.get(int(region_id), FilterCriteria())
+        ep_count = int((ep_in & view['ep_keep']).sum())
+        br_count = int((br_in & view['branch_keep']).sum())
+        axon_len = float(view['length'][np.isin(view['length_ids'], match)].sum())
+        denominator = view['endpoint_denominator']
+        fraction = ep_count / denominator if denominator > 0 else 0.0
 
         def _count_on(in_region: np.ndarray, sides: np.ndarray, side: int) -> int:
             return int((in_region & (sides == side)).sum()) if soma_side != 0 else 0
@@ -338,6 +382,7 @@ def run_analysis(
             endpoint_count_contra=_count_on(ep_in, ep_side, -soma_side),
             branch_point_count_ipsi=_count_on(br_in, branch_side, soma_side),
             branch_point_count_contra=_count_on(br_in, branch_side, -soma_side),
+            side=side if soma_side != 0 else 'both',
         )
 
     target_results = [_build_region_result(rid) for rid in target_region_ids]
@@ -377,7 +422,8 @@ def run_analysis(
     )
 
 
-def apply_filter(result: CellAnalysisResult, criteria_per_region: dict[int, FilterCriteria]) -> CellAnalysisResult:
+def apply_filter(result: CellAnalysisResult, criteria_per_region: dict[int, FilterCriteria],
+                 max_contra_endpoint_pct: float | None = None) -> CellAnalysisResult:
     """
     Eldönti, hogy a sejt átmegy-e a szűrőn (result.passes_filter), tiszta
     halmazműveletekkel:
@@ -385,15 +431,20 @@ def apply_filter(result: CellAnalysisResult, criteria_per_region: dict[int, Filt
         passes = (MINDEN 'AND' teljesül)
                  AND (EGYETLEN 'NOT' sem teljesül)
                  AND (ha van 'OR', akkor LEGALÁBB EGY 'OR' teljesül)
+                 AND (ha meg van adva: a kontralaterális végpontok aránya <= max_contra_endpoint_pct)
 
     Sorrendfüggetlen, és egy 'NOT' feltétel hozzáadása a szűrt halmazt csak
     szűkítheti, sosem bővítheti. Ha egyetlen aktív szabály sincs, passes_filter = None.
+    A kontralaterális feltétel csak eldönthető oldalú sejtet zár ki (soma nélkül
+    nincs mihez viszonyítani).
     """
     active = {rid: c for rid, c in criteria_per_region.items() if c.is_active()}
-    if not active:
+    if not active and max_contra_endpoint_pct is None:
         result.passes_filter = None
         return result
 
+    contra_ok = (max_contra_endpoint_pct is None or not result.has_hemisphere
+                 or result.contra_endpoint_fraction * 100 <= max_contra_endpoint_pct)
     results_by_region = {tr.region_id: tr for tr in result.target_results}
     required_ok, excluded_ok = True, True
     or_exists, or_ok = False, False
@@ -411,7 +462,7 @@ def apply_filter(result: CellAnalysisResult, criteria_per_region: dict[int, Filt
         else:  # 'AND'
             required_ok = required_ok and meets
 
-    result.passes_filter = required_ok and excluded_ok and (or_ok or not or_exists)
+    result.passes_filter = required_ok and excluded_ok and (or_ok or not or_exists) and contra_ok
     return result
 
 
@@ -434,6 +485,12 @@ def results_to_dataframe(
         row = {
             'cell': cell_name,
             'soma_region': result.soma_region_name,
+            'summary_soma_region': result.group_region,
+            'db_soma_region': result.db_soma_region,
+            'projection_class': result.projection_class,
+            'projection_subclass': result.projection_subclass,
+            'cre_line': result.cre_line,
+            'curation_label': result.curation_label,
             'total_axon_length_um': round(result.total_axon_length_um, 1),
             'passes_filter': result.passes_filter,
             'run_hemisphere_setting': result.laterality,
@@ -463,6 +520,7 @@ def results_to_dataframe(
                 f'{col}_endpoint_pct': _round_pct(tr.endpoint_fraction),
                 f'{col}_endpoints_ipsi': tr.endpoint_count_ipsi,
                 f'{col}_endpoints_contra': tr.endpoint_count_contra,
+                f'{col}_side': tr.side,
             })
             crit = criteria_per_region.get(tr.region_id)
             if crit is not None:
@@ -509,7 +567,7 @@ def build_soma_distribution_summary(results: list[tuple[str, CellAnalysisResult]
     """
     per_soma: dict[str, dict] = {}
     for cell_name, r in results:
-        entry = per_soma.setdefault(r.soma_region_name, {'total': 0, 'ids': []})
+        entry = per_soma.setdefault(r.group_region, {'total': 0, 'ids': []})
         entry['total'] += 1
         if filter_was_active:
             is_projecting = bool(r.passes_filter)
@@ -547,7 +605,7 @@ def build_laterality_summary(results: list[tuple[str, CellAnalysisResult]]) -> d
     per_cell_rows = []
 
     for cell_name, r in results:
-        cls, serial, soma = r.laterality_class, _cell_serial(cell_name), r.soma_region_name
+        cls, serial, soma = r.laterality_class, _cell_serial(cell_name), r.group_region
         ids_by_class[cls].append(serial)
         by_soma.setdefault(soma, {k: [] for k in LATERALITY_CLASS_ORDER})[cls].append(serial)
         per_cell_rows.append({
@@ -651,7 +709,7 @@ def build_cortical_summary(
         if r.soma_region_id <= 0:
             skipped += 1
             continue
-        groups[r.soma_region_name].append((name, r))
+        groups[r.group_region].append((name, r))
 
     num_labels = [region_label_fn(rid) for rid in numerator_region_ids]
     base_label = region_label_fn(base_region_id) if base_region_id is not None else 'All L5'
@@ -718,19 +776,18 @@ def build_cortical_summary(
             categories[f"{lab} only"] = _sorted_df(category_rows[f"{lab} only"], f"{lab} only Projects")
         categories["All targets"] = _sorted_df(category_rows["All targets"], "All targets Projects")
 
-    # A használt kritérium a fájlnevekbe és a feliratba kerül.
-    involved = ([base_region_id] if base_region_id is not None else []) + list(numerator_region_ids)
-    used = [criteria_per_region.get(rid, FilterCriteria()) for rid in involved]
+    # A használt kritérium (a régiónként ténylegesen használt féltekével) a
+    # fájlnevekbe és a feliratba kerül.
     lat = laterality or (results[0][1].laterality if results else 'both')
-    lat_note = {'ipsi': ' · ipsilateral only', 'contra': ' · contralateral only'}.get(lat, '')
-    lat_slug = {'ipsi': '_ipsi', 'contra': '_contra'}.get(lat, '')
+    involved = ([base_region_id] if base_region_id is not None else []) + list(numerator_region_ids)
+    used = [criteria_per_region.get(rid, FilterCriteria()).effective(lat) for rid in involved]
     if len({c.describe() for c in used}) <= 1:
-        crit = used[0] if used else FilterCriteria()
-        criteria_note, slug = crit.describe() + lat_note, crit.slug() + lat_slug
+        crit = used[0] if used else FilterCriteria().effective(lat)
+        criteria_note, slug = crit.describe(), crit.slug()
     else:
         criteria_note = " · ".join(f"{region_label_fn(rid)}: {c.describe()}" for rid, c in zip(involved, used))
-        criteria_note += lat_note
-        slug = "mixed" + lat_slug
+        sides = {c.side for c in used}
+        slug = "mixed" + (f"_{sides.pop()}" if len(sides) == 1 and sides <= set(_SIDE_NOTES) else "")
 
     return {
         "benne": _sorted_df(benne_rows, base_col),

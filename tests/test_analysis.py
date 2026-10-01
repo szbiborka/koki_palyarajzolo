@@ -746,3 +746,75 @@ def test_category_slugs_are_unique():
     # Két KÜLÖNBÖZŐ régió, azonos első 24 karakterrel -> sorszámozás
     tricky = ["Primary somatosensory area barrel field", "Primary somatosensory area mouth"]
     assert len(set(category_slugs(tricky).values())) == 2
+
+
+# ---------------------------------------------------------------------------
+# RÉGIÓNKÉNTI FÉLTEKE és KONTRALATERÁLIS KIZÁRÁS
+# ---------------------------------------------------------------------------
+def test_side_can_differ_per_region():
+    """Ugyanabban a futásban az egyik régió ipszi-, a másik kontralaterálisan értékelődik."""
+    atlas = _mirrored_atlas()
+    names = {CORTEX: "Cortex", GPE: "GPe"}
+    cell = _bilateral_cell()   # 2 végpont a bal (ipszi) GPe-ben, 2 a jobb (kontra) GPe-ben, 1 a bal kéregben
+    crit = {GPE: FilterCriteria(side='contra'), CORTEX: FilterCriteria(min_branch_points=0, side='ipsi')}
+
+    res = run_analysis(cell, atlas, names, [GPE, CORTEX], criteria_per_region=crit, laterality='both')
+    by = {t.region_id: t for t in res.target_results}
+    assert by[GPE].side == 'contra' and by[GPE].endpoint_count == 2
+    assert abs(by[GPE].endpoint_fraction - 1.0) < 1e-9          # 2 / 2 kontralaterális végpont
+    assert by[CORTEX].side == 'ipsi' and by[CORTEX].endpoint_count == 1
+
+    # side=None -> a futás alapértelmezése
+    res = run_analysis(cell, atlas, names, [GPE], criteria_per_region={GPE: FilterCriteria()}, laterality='ipsi')
+    assert res.target_results[0].side == 'ipsi' and res.target_results[0].endpoint_count == 2
+
+
+def test_side_is_recorded_in_description_and_slug():
+    assert FilterCriteria(side='ipsi').slug() == "ep1_br1_ipsi"
+    assert "ipsilateral only" in FilterCriteria(side='ipsi').describe()
+    assert FilterCriteria(side='both').slug() == "ep1_br1"
+    assert FilterCriteria().effective('contra').side == 'contra'
+    assert FilterCriteria(side='ipsi').effective('contra').side == 'ipsi'
+
+
+def test_contralateral_projectors_can_be_excluded():
+    atlas = _mirrored_atlas()
+    names = {CORTEX: "Cortex", GPE: "GPe"}
+    crit = {GPE: FilterCriteria()}
+
+    def passes(cell, max_pct):
+        res = run_analysis(cell, atlas, names, [GPE], criteria_per_region=crit)
+        return apply_filter(res, crit, max_contra_endpoint_pct=max_pct).passes_filter
+
+    ipsi_cell, bilateral = _cell_with_arbor_at_z(7), _bilateral_cell()   # bilateral: 2/5 = 40% kontra
+    assert passes(bilateral, None) is True
+    assert passes(bilateral, 0.0) is False
+    assert passes(bilateral, 50.0) is True
+    assert passes(ipsi_cell, 0.0) is True
+
+    # Önmagában (régiós szabály nélkül) is aktív szűrő
+    res = run_analysis(bilateral, atlas, names, [])
+    assert apply_filter(res, {}, max_contra_endpoint_pct=0.0).passes_filter is False
+    assert apply_filter(res, {}).passes_filter is None
+
+
+def test_summaries_group_by_layer_corrected_region():
+    pt_in_l6 = _cell('Primary motor area Layer 6a', True, True, False)
+    pt_in_l6.summary_soma_region = 'Primary motor area Layer 5'
+    pt_in_l5 = _cell('Primary motor area Layer 5', True, False, False)
+    s = build_cortical_summary([("a.swc", pt_in_l6), ("b.swc", pt_in_l5)], 343, [GPE], {343: 'BS', GPE: 'GPe'}.get)
+    assert list(s['nelkul']['Soma Region']) == ['Primary motor area Layer 5']
+    assert s['nelkul'].iloc[0]['Total L5 Cells'] == 2
+
+
+def test_camera_views_set_an_orthographic_camera():
+    import plotly.graph_objects as go
+    from core.visualization import _apply_scene_layout, get_theme, CAMERA_VIEWS
+
+    for view in CAMERA_VIEWS:
+        fig = go.Figure()
+        _apply_scene_layout(fig, get_theme(), height=400, title='t', view=view)
+        if view == 'free':
+            assert fig.layout.scene.camera.eye.x is None
+        else:
+            assert fig.layout.scene.camera.projection.type == 'orthographic'

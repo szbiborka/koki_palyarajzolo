@@ -149,7 +149,9 @@ def build_3d_plot(
         show_only_target_regions: bool = False,
         region_descendants: dict[int, set[int]] | None = None,
         theme: str | dict | None = None,
-        show_brain_outline: bool = True
+        show_brain_outline: bool = True,
+        show_projection_points: bool = True,
+        view: str = 'free'
 ) -> go.Figure:
     th = get_theme(theme)
     coords = result.coords
@@ -205,7 +207,7 @@ def build_3d_plot(
             name='Soma', hovertext=f'Soma<br>{result.soma_region_name}', hoverinfo='text',
         ))
 
-    for i, tr in enumerate(result.target_results):
+    for i, tr in enumerate(result.target_results if show_projection_points else []):
         match = np.fromiter(_expand_ids(tr.region_id, region_descendants), dtype=int)
         pts = proj_idx[np.isin(point_regions[proj_idx], match)]
         if len(pts) > 0:
@@ -218,23 +220,38 @@ def build_3d_plot(
             ))
 
     fig = go.Figure(data=traces)
-    _apply_scene_layout(fig, th, height=650, title=f'<b>{cell_name}</b>  |  Soma: {result.soma_region_name}')
+    _apply_scene_layout(fig, th, height=650, title=f'<b>{cell_name}</b>  |  Soma: {result.soma_region_name}',
+                        view=view)
     return fig
 
 
-def _apply_scene_layout(fig: go.Figure, th: dict, height: int, title: str) -> None:
+# Kameraállások a CCF tengelyeihez: x = anterior->posterior, y = dorsal->ventral,
+# z = medio-laterális (bal->jobb). A rögzített nézetek ortografikusak, mint az
+# atlaszmetszetek; a 'free' a szokásos forgatható perspektíva.
+CAMERA_VIEWS = {
+    'free': None,
+    'top': dict(eye=dict(x=0, y=-2.2, z=0), up=dict(x=-1, y=0, z=0)),    # felülről, anterior felfelé
+    'side': dict(eye=dict(x=0, y=0, z=2.2), up=dict(x=0, y=-1, z=0)),    # oldalról (jobbról), dorsal felfelé
+    'front': dict(eye=dict(x=-2.2, y=0, z=0), up=dict(x=0, y=-1, z=0)),  # szemből (anterior felől)
+}
+
+
+def _apply_scene_layout(fig: go.Figure, th: dict, height: int, title: str, view: str = 'free') -> None:
     """Egységes, témafüggő elrendezés a 3D jelenetekhez."""
     axis = dict(backgroundcolor=th['scene_bg'], gridcolor=th['grid'],
                 showbackground=True, zeroline=False,
                 color=th['axis_text'], title_font=dict(color=th['axis_text']),
                 tickfont=dict(color=th['axis_text'], size=9))
+    camera = CAMERA_VIEWS.get(view)
+    scene_camera = dict(camera, projection=dict(type='orthographic')) if camera else None
     fig.update_layout(
         title=dict(text=title, font=dict(size=13, color=th['axis_text']), x=0.01),
         scene=dict(
-            xaxis=dict(title='X (µm)', **axis),
-            yaxis=dict(title='Y (µm)', **axis),
-            zaxis=dict(title='Z (µm)', **axis),
+            xaxis=dict(title='AP (µm)', **axis),
+            yaxis=dict(title='DV (µm)', **axis),
+            zaxis=dict(title='ML (µm)', **axis),
             aspectmode='data',
+            camera=scene_camera,
         ),
         legend=dict(bgcolor=th['legend_bg'], bordercolor=th['legend_border'],
                     borderwidth=1, font=dict(size=11, color=th['axis_text'])),
@@ -249,7 +266,8 @@ def build_3d_plot_multi(
         show_only_target_regions: bool = False,
         region_descendants: dict[int, set[int]] | None = None,
         theme: str | dict | None = None,
-        show_brain_outline: bool = True
+        show_brain_outline: bool = True,
+        view: str = 'free'
 ) -> go.Figure:
     """Több sejt együttes nézete: minden sejt saját színt kap (axon + soma)."""
     th = get_theme(theme)
@@ -297,5 +315,5 @@ def build_3d_plot_multi(
             ))
 
     fig = go.Figure(data=traces)
-    _apply_scene_layout(fig, th, height=700, title=f'<b>Combined view</b>  —  {len(results)} cells')
+    _apply_scene_layout(fig, th, height=700, title=f'<b>Combined view</b>  —  {len(results)} cells', view=view)
     return fig

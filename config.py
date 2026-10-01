@@ -13,6 +13,29 @@ BASE_DATA_DIR = os.environ.get('PALYAKOVETO_DATA_DIR', os.path.join(_DATA_DIR, '
 ATLAS_PATH = os.environ.get('ATLAS_PATH', os.path.join(_DATA_DIR, 'annotation_25.nrrd'))
 DICTIONARY_PATH = os.environ.get('DICTIONARY_PATH', os.path.join(_DATA_DIR, 'query.csv'))
 
+# --- Adatbázis-metaadat (mouse.digital-brain.cn, kéreg adatkészlet) ---
+# Sejtenként: az adatbázis saját soma-régiója, Cre vonal, féltekéje és a
+# VETÍTÉSI OSZTÁLY (IT / PT / CT, pl. 'PT-18'). Forrás:
+#   https://mouse.digital-brain.cn/projectome/2/srv//info/mouse/cortex/mouse.neuron.info.json
+# Ha a fájl hiányzik, az app ezek nélkül is működik.
+DATABASE_METADATA_PATH = os.environ.get(
+    'PALYAKOVETO_METADATA',
+    os.path.join(_DATA_DIR, 'database_metadata', 'cortex_neuron_info.json'))
+
+# --- Kézi ellenőrzés (kuráció) ---
+# A kézzel ellenőrzött sejtek ítélete (pl. "eltolódott L6"), hogy ugyanazt a
+# sejtet ne kelljen minden elemzésnél újra kiszűrni. Kicsi, verziókövetett fájl.
+CURATION_PATH = os.environ.get('PALYAKOVETO_CURATION', os.path.join(PROJECT_DIR, 'curation', 'manual_labels.csv'))
+CURATION_LABELS = {
+    'shifted_L6': 'Shifted L6 (registration offset → false region hits)',
+    'actually_L5': 'Actually L5 (soma on the L5/L6 border)',
+    'cortico_cortical': 'Cortico-cortical (IT)',
+    'other_problem': 'Other problem',
+    'verified': 'Verified OK',
+}
+# Ezeket a címkéket az app alapértelmezésben KIZÁRJA az elemzésből.
+DEFAULT_EXCLUDED_LABELS = ['shifted_L6', 'other_problem']
+
 # --- Soma index fájl ---
 # Ez a fájl tárolja el az összes SWC fájl soma-régió megfeleltetését.
 # Első futáskor épül fel, utána gyorsan betöltődik.

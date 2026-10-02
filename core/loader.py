@@ -10,10 +10,9 @@ import nrrd
 import streamlit as st
 
 from config import (
-    ATLAS_PATH, DICTIONARY_PATH, VOXEL_SIZE, SOMA_INDEX_PATH,
-    BRAINSTEM_MOTOR_ID, BRAINSTEM_MOTOR_NAME, BRAINSTEM_MOTOR_ACRONYM,
-    BRAINSTEM_MOTOR_COMPONENTS, SWC_TYPE_SOMA,
+    ATLAS_PATH, DICTIONARY_PATH, SOMA_INDEX_PATH, VIRTUAL_REGIONS, SWC_TYPE_SOMA,
 )
+from core.analysis import to_voxel
 
 SWC_COLUMNS = ['id', 'type', 'x', 'y', 'z', 'radius', 'pid']
 
@@ -54,9 +53,9 @@ def load_dictionary() -> pd.DataFrame:
 
 
 def region_name_map(dictionary: pd.DataFrame) -> dict[int, str]:
-    """Régió ID -> név, a virtuális "leszálló agytörzzsel" együtt. Ez az egyetlen névforrás."""
+    """Régió ID -> név, a virtuális régiókkal együtt. Ez az egyetlen névforrás."""
     names = dict(zip(dictionary['id'].astype(int), dictionary['safe_name']))
-    names[BRAINSTEM_MOTOR_ID] = BRAINSTEM_MOTOR_NAME
+    names.update({rid: spec['name'] for rid, spec in VIRTUAL_REGIONS.items()})
     return names
 
 
@@ -95,16 +94,33 @@ def build_region_descendants(
     result: dict[int, set[int]] = {}
     for rid in region_ids:
         rid = int(rid)
-        if rid == BRAINSTEM_MOTOR_ID:
-            # Virtuális "leszálló agytörzs": Középagy + Utóagy leszármazottai,
-            # a köztiagy/thalamus KIZÁRVA.
-            desc: set[int] = set()
-            for comp in BRAINSTEM_MOTOR_COMPONENTS:
-                desc |= _descendants_of(comp)
-            result[rid] = desc
-        else:
+        spec = VIRTUAL_REGIONS.get(rid)
+        if spec is None:
             result[rid] = _descendants_of(rid)
+            continue
+        # Virtuális régió: a befoglalt régiók fái MÍNUSZ a kivont régiók fái
+        # (pl. leszálló agytörzs = Középagy + Utóagy; thalamus a TRN nélkül).
+        desc: set[int] = set()
+        for comp in spec['include']:
+            desc |= _descendants_of(comp)
+        for comp in spec['exclude']:
+            desc -= _descendants_of(comp)
+        result[rid] = desc
     return result
+
+
+def overlapping_region_pairs(region_ids: list[int], region_descendants: dict[int, set[int]]) -> list[tuple]:
+    """
+    Azok a kiválasztott régiópárok, amelyek atlasz-ID-i átfednek (pl. Thalamus és
+    TRN, mert a TRN a thalamus része). Ilyenkor ugyanaz a végpont mindkét
+    régióba beszámít: a NOT-szabályok és a kizárólagos ("only") kategóriák félrevezetők.
+    """
+    pairs = []
+    for i, a in enumerate(region_ids):
+        for b in region_ids[i + 1:]:
+            if region_descendants.get(a, {a}) & region_descendants.get(b, {b}):
+                pairs.append((a, b))
+    return pairs
 
 
 def load_swc(filepath: str) -> pd.DataFrame:
@@ -172,10 +188,11 @@ def get_all_swc_files(base_dir: str) -> dict[str, str]:
 def build_region_search_options(region_names: dict[int, str], dictionary: pd.DataFrame) -> dict[str, int]:
     """
     A UI régió-kereső opciói: 'Régió neve (RÖVIDÍTÉS)' -> ID.
-    A virtuális "leszálló agytörzs" legelöl áll, mert a pyramidal tract sejtek
-    helyes kiválasztásához ezt kell használni a nyers "Brain stem" helyett.
+    A virtuális régiók (pl. leszálló agytörzs, thalamus a TRN nélkül) állnak
+    legelöl, mert a pyramidal tract / L6 kérdésekhez ezeket kell használni a nyers
+    "Brain stem" / "Thalamus" helyett.
     """
-    options = {f"{region_names[BRAINSTEM_MOTOR_ID]} ({BRAINSTEM_MOTOR_ACRONYM})": BRAINSTEM_MOTOR_ID}
+    options = {f"{region_names[rid]} ({spec['acronym']})": rid for rid, spec in VIRTUAL_REGIONS.items()}
     for rid, acronym in zip(dictionary['id'].astype(int), dictionary['acronym']):
         options[f"{region_names[rid]} ({acronym})"] = rid
     return options
@@ -229,7 +246,7 @@ def build_soma_index(
             if soma_xyz is None:
                 region_id, region_name = -1, "No soma"
             else:
-                voxel = tuple(int(np.clip(round(c / VOXEL_SIZE), 0, n - 1)) for c, n in zip(soma_xyz, shape))
+                voxel = tuple(int(v[0]) for v in to_voxel(*(np.array([c]) for c in soma_xyz), shape))
                 region_id = int(atlas_matrix[voxel])
                 region_name = region_names.get(region_id, "Unknown")
         except Exception:

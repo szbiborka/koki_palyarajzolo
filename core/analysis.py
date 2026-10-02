@@ -11,7 +11,7 @@ import pandas as pd
 from config import (
     VOXEL_SIZE, SWC_TYPE_SOMA, SWC_TYPE_AXON, SWC_TYPE_AXON_UNDEFINED,
     DEFAULT_FILTER, MIDLINE_AXIS, DEFAULT_LATERALITY,
-    CONTRA_CROSSING_MIN_AXON_UM,
+    CONTRA_CROSSING_MIN_AXON_UM, MIDLINE_BAND_UM, VOXEL_LOOKUP,
 )
 
 # Egy axonszakasz mintavételezési sűrűsége: fél voxelenként egy minta, legfeljebb
@@ -72,11 +72,21 @@ class FilterCriteria:
 
     def is_projection(self, endpoint_count: int, branch_point_count: int,
                       axon_length_um: float, endpoint_fraction: float) -> bool:
-        """Vetít-e ide a sejt e kritérium szerint (minden feltétel EGYSZERRE)."""
+        """
+        Vetít-e ide a sejt e kritérium szerint (minden feltétel EGYSZERRE).
+        Ha minden küszöb 0, a kritérium "bármilyen axon jelenléte": legalább
+        valami axonnak lennie kell a régióban, különben minden sejt vetítene mindenhová.
+        """
+        if not self._has_threshold():
+            return endpoint_count + branch_point_count > 0 or axon_length_um > 0
         return (endpoint_count >= self.min_endpoints and
                 branch_point_count >= self.min_branch_points and
                 axon_length_um >= self.min_axon_length_um and
                 endpoint_fraction >= self.min_endpoint_fraction)
+
+    def _has_threshold(self) -> bool:
+        return (self.min_endpoints > 0 or self.min_branch_points > 0 or
+                self.min_axon_length_um > 0 or self.min_endpoint_fraction > 0)
 
     def meets_thresholds(self, region_result: RegionResult) -> bool:
         """A régió eredménye teljesíti-e EZT a kritériumot."""
@@ -133,7 +143,7 @@ class CellAnalysisResult:
     total_endpoint_count: int = 0
     annotated_endpoint_count: int = 0
     laterality: str = DEFAULT_LATERALITY
-    soma_side: int = 0  # -1 / +1 a középvonalhoz képest, 0 = nincs soma vagy a középvonalon ül
+    soma_side: int = 0  # -1 / +1 a középvonalhoz képest, 0 = nincs soma vagy a középvonali sávban ül
     endpoints_ipsi_total: int = 0
     endpoints_contra_total: int = 0
     axon_length_ipsi_um: float = 0.0
@@ -201,15 +211,26 @@ class CellAnalysisResult:
 # EGY SEJT ELEMZÉSE
 # =============================================================================
 
-def _to_voxel(x: np.ndarray, y: np.ndarray, z: np.ndarray, shape: tuple) -> tuple:
-    """µm koordináták -> (vx, vy, vz) voxelindex-tömbök, az atlasz határaira vágva."""
-    return tuple(np.clip(np.round(c / VOXEL_SIZE).astype(int), 0, n - 1) for c, n in zip((x, y, z), shape))
+def to_voxel(x: np.ndarray, y: np.ndarray, z: np.ndarray, shape: tuple) -> tuple:
+    """
+    µm koordináták -> (vx, vy, vz) voxelindex-tömbök, az atlasz határaira vágva.
+    Alapértelmezés az Allen CCF konvenciója: az i. voxel a [25*i, 25*(i+1)) µm
+    tartomány (floor). A régi, kerekítéses viselkedés a VOXEL_LOOKUP = 'round'
+    beállítással érhető el (lásd config.py).
+    """
+    to_index = np.round if VOXEL_LOOKUP == 'round' else np.floor
+    return tuple(np.clip(to_index(c / VOXEL_SIZE).astype(int), 0, n - 1) for c, n in zip((x, y, z), shape))
 
 
-def _side_of(voxel_index: tuple, shape: tuple) -> np.ndarray:
-    """Középvonalhoz viszonyított oldal: -1 / +1, a középvonali voxelsorban 0."""
-    midline = shape[MIDLINE_AXIS] / 2.0
-    return np.sign(voxel_index[MIDLINE_AXIS].astype(float) - midline).astype(int)
+def side_of(ml_um: np.ndarray, shape: tuple) -> np.ndarray:
+    """
+    Középvonalhoz viszonyított oldal µm-ben: -1 / +1, a középvonal ±MIDLINE_BAND_UM
+    sávjában 0 (eldönthetetlen). A középvonal a medio-laterális kiterjedés fele.
+    """
+    offset = np.asarray(ml_um, dtype=float) - shape[MIDLINE_AXIS] * VOXEL_SIZE / 2.0
+    side = np.sign(offset).astype(int)
+    side[np.abs(offset) <= MIDLINE_BAND_UM] = 0
+    return side
 
 
 def _sample_axon_segments(x, y, z, child_rows, parent_rows, atlas_matrix):
@@ -232,11 +253,9 @@ def _sample_axon_segments(x, y, z, child_rows, parent_rows, atlas_matrix):
     k = np.arange(int(n_samp.sum())) - starts[seg_id]
     t = (k + 0.5) / n_samp[seg_id]  # minden minta a saját részszakasza közepén
 
-    voxel = _to_voxel(px[seg_id] + t * dx[seg_id],
-                      py[seg_id] + t * dy[seg_id],
-                      pz[seg_id] + t * dz[seg_id], atlas_matrix.shape)
-    samp_region = atlas_matrix[voxel]
-    samp_side = _side_of(voxel, atlas_matrix.shape)
+    sample_xyz = (px[seg_id] + t * dx[seg_id], py[seg_id] + t * dy[seg_id], pz[seg_id] + t * dz[seg_id])
+    samp_region = atlas_matrix[to_voxel(*sample_xyz, atlas_matrix.shape)]
+    samp_side = side_of(sample_xyz[MIDLINE_AXIS], atlas_matrix.shape)
     samp_len = seg_len[seg_id] / n_samp[seg_id]
     return samp_region, samp_side, samp_len
 
@@ -271,9 +290,9 @@ def run_analysis(
     x, y, z = (swc_df[c].to_numpy(dtype=float) for c in ('x', 'y', 'z'))
 
     # --- Csomópontok helye az atlaszban ---
-    voxel = _to_voxel(x, y, z, shape)
+    voxel = to_voxel(x, y, z, shape)
     point_regions = atlas_matrix[voxel]
-    point_side = _side_of(voxel, shape)
+    point_side = side_of((x, y, z)[MIDLINE_AXIS], shape)
 
     # --- Fa-topológia: végpontok és elágazások ---
     id_to_row = {node_id: row for row, node_id in enumerate(ids)}

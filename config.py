@@ -49,6 +49,17 @@ SOMA_INDEX_PATH = os.environ.get(
 # Voxel méret mikrométerben (a 25-ös atlasz 25um felbontású)
 VOXEL_SIZE = 25
 
+# µm -> voxelindex konvenció.
+#   'floor' (alapértelmezés, az Allen-eszközök konvenciója): az i. voxel a
+#           [25*i, 25*(i+1)) µm tartomány. Az adatbázis saját soma-régióival
+#           95,07% az egyezés (18 621 sejt).
+#   'round' (a 2026-10-02 előtti viselkedés): 94,04% egyezés. Csak a korábbi
+#           (pl. poszter-) táblák pontos reprodukálásához.
+# A két konvenció 1650 sejt (8,9%) soma-régióját sorolja be eltérően - ezek
+# közül 907-nél a 'floor', 716-nál a 'round' egyezik az adatbázissal.
+# Váltás után a soma indexet újra kell építeni (Rebuild Index).
+VOXEL_LOOKUP = os.environ.get('PALYAKOVETO_VOXEL_LOOKUP', 'floor')
+
 # --- FÉLTEKE (oldaliság) ---
 # Az Allen atlaszban MINDKÉT félteke UGYANAZT a régió-ID-t viseli: nincs külön
 # "bal GPe" és "jobb GPe". Ezért önmagában a régió-ID alapján nem lehet
@@ -87,6 +98,12 @@ DEFAULT_LATERALITY = 'both'
 # hiba. Ez CSAK az "átkel-e" jelzőt érinti; a végpontok számlálását nem.
 CONTRA_CROSSING_MIN_AXON_UM = 50.0
 
+# A középvonal ±ennyi um-es sávjában lévő pont (és soma) oldala eldönthetetlen:
+# sem ipszi-, sem kontralaterálisnak nem számít. A regisztráció ~2 voxeles
+# bizonytalansága miatt egy épp átlógó helyi mellékág különben "kontralaterális
+# vetítésnek" számítana (a PT sejtek 1,3%-ánál ez volt az egyetlen ok).
+MIDLINE_BAND_UM = 50.0
+
 # --- Alapértelmezett célterületek ---
 # Ezek az ID-k az Allen Mouse Brain Atlaszból származnak.
 # A felhasználói felületen ezek lesznek előre kiválasztva,
@@ -109,6 +126,31 @@ BRAINSTEM_MOTOR_ID = -1001
 BRAINSTEM_MOTOR_NAME = "Brain stem descending — Midbrain+Hindbrain (excl. thalamus)"
 BRAINSTEM_MOTOR_ACRONYM = "BS-desc"
 BRAINSTEM_MOTOR_COMPONENTS = [313, 1065]  # Midbrain (MB), Hindbrain (HB)
+
+# --- Virtuális "thalamus a TRN nélkül" ---
+# Az Allen ontológiában a TRN (262) a Thalamus (549) LESZÁRMAZOTTJA. Ha a
+# "Thalamus" és a "TRN" egyszerre célterület, minden TRN-végpont thalamikusnak
+# is számít: egy NOT-thalamus szabály a TRN-be vetítő sejteket is kizárja, és
+# a "TRN only" kategória sosem lehet nem üres.
+THALAMUS_NO_TRN_ID = -1002
+
+# Minden virtuális régió: név, rövidítés, a befoglalt és a kivont valós régiók
+# (mindegyik a teljes leszármazotti fájával).
+VIRTUAL_REGIONS = {
+    BRAINSTEM_MOTOR_ID: {'name': BRAINSTEM_MOTOR_NAME, 'acronym': BRAINSTEM_MOTOR_ACRONYM,
+                         'include': BRAINSTEM_MOTOR_COMPONENTS, 'exclude': []},
+    THALAMUS_NO_TRN_ID: {'name': "Thalamus excluding the reticular nucleus (TRN)", 'acronym': "TH-noRT",
+                         'include': [549], 'exclude': [262]},
+}
+
+# Régiónként eltérő ALAPÉRTELMEZETT kritérium (a felületen felülírható).
+# A leszálló agytörzsnél >= 5 végpont: a valódi PT sejteknek medián 102
+# agytörzsi végpontjuk van (98%-uknak >= 5), míg a CT/IT sejtek "agytörzsi
+# vetítése" medián 3-4 végpont a thalamussal határos középagyban (MB, APN, MRN) -
+# regisztrációs átszivárgás, ugyanaz a jelenség, mint az eltolódott L6 sejteknél.
+REGION_DEFAULT_FILTER_OVERRIDES = {
+    BRAINSTEM_MOTOR_ID: {'min_endpoints': 5},
+}
 
 # --- Sejttípus kódok az SWC formátumban ---
 # Ez a szabványos SWC specifikáció szerint van definiálva.
@@ -134,74 +176,70 @@ DEFAULT_FILTER = {
 
 # --- Vizualizációs beállítások ---
 VIZ_MARCHING_CUBES_STEP = 2      # Felszín-generálás lépésköze (kisebb = szebb, de lassabb)
+VIZ_DEFAULT_LINE_WIDTH = 4       # Axonvonal vastagsága (px) - a felületen állítható
+VIZ_DEFAULT_HEIGHT = 850         # Az ábra magassága (px) - a felületen állítható
+# Egy ábrán legfeljebb ennyi axonszakasz: fölötte a fa egyszerűsödik (minden N-edik
+# csomópont + MINDEN elágazás és végpont marad, a vonalak folytonosak maradnak).
+VIZ_MAX_SEGMENTS = 200_000           # egy sejt nézete
+VIZ_MAX_SEGMENTS_COMBINED = 120_000  # a kombinált nézet összesen (áttekintő ábra)
 
 # --- 3D JELENET TÉMÁK ---
-# Két teljes témát kínálunk. A "dark" az alapértelmezett: a vékony axonvonalak
-# világos színnel, sötét háttéren sokkal jobban láthatók (ez a fluoreszcens
-# mikroszkópia megszokott képi világa is).
+# Két teljes téma. A "dark" az alapértelmezett: a vékony axonvonalak világos
+# színnel, sötét háttéren sokkal jobban láthatók.
 #
-# MINDKÉT palettát a dataviz validátor ellenőrizte (OKLCH világosság-sáv, króma-
-# padló, színtévesztő elkülönülés, kontraszt a háttérhez):
-#   dark  (felület #0E1117): minden ellenőrzés PASS, legrosszabb szomszédos
-#                            CVD ΔE 8.8 (deutan) / 6.3 (tritan)
-#   light (felület #FAF9F6): minden ellenőrzés PASS, legrosszabb szomszédos
-#                            CVD ΔE 11.3 (deutan) / 8.4 (tritan)
-# A sorrend SZÁMÍT: a validátor a szomszédos párokat méri, és ez a sorrend
-# maximalizálja a legrosszabb pár elkülönülését. Ne keverd össze a színeket.
-# A régiók nevesítve is megjelennek a jelmagyarázatban, tehát az azonosítás
-# soha nem csak a színen múlik.
+# A kategória-paletta a dataviz referencia-palettája (8 szín, rögzített sorrend),
+# a mi hátterünkön validálva (2026-10-02, OKLab x100):
+#   dark  (#0E1117): egymás melletti párok: CVD ΔE >= 8,4, normál látás >= 19,3,
+#                    kontraszt mind >= 3:1 - PASS
+#   light (#FAF9F6): CVD ΔE >= 9,1, normál látás >= 19,6 - PASS; három szín 3:1
+#                    alatti kontrasztú, ezért a nevük mindig látszik (jelmagyarázat, hover)
+# Egy 3D jelenetben BÁRMELY két szín egymás mellé kerülhet ("all pairs"): erre
+# csak az első 3 szín felel meg - ezért a sejtek alapértelmezésben a vetítési
+# osztály (3 csoport) szerint színeződnek, és 8 csoport fölött a többi a semleges
+# "Other" színt kapja. A színt soha nem generáljuk és nem ismételjük ciklikusan.
 VIZ_THEMES = {
     'dark': {
         'label': 'Dark (recommended — thin axons stand out)',
         'paper_bg': '#0E1117',        # A teljes ábra háttere
         'scene_bg': '#0E1117',        # A 3D tengelyek háttere
-        'grid': '#2A3040',            # Visszafogott rács
-        'axis_text': '#9BA4B4',       # Tengelyfeliratok
+        'grid': '#2C2C2A',            # Visszafogott rács
+        'axis_text': '#C3C2B7',       # Tengelyfeliratok
         'soma': '#FFFFFF',            # A soma fehéren a legjobban látszik
-        'axon_default': '#5A6474',    # Nem célterületi axon - jelen van, de háttérbe húzódik
-        'brain_outline': '#8B96A8',   # Agy körvonal (nagyon áttetsző)
-        'brain_outline_opacity': 0.055,
+        'axon_default': '#A3A29B',    # Nem célterületi axon - jól látható, de színtelen (a szín a célterületeké)
+        'neutral': '#898781',         # "Other" csoportok, egyéb régiók
+        'soma_region': '#C3C2B7',     # A soma régiója (kontextus)
+        'brain_outline': '#898781',   # Agy körvonal (nagyon áttetsző)
+        'brain_outline_opacity': 0.05,
         'legend_bg': 'rgba(14,17,23,0.85)',
-        'legend_border': '#2A3040',
+        'legend_border': '#383835',
         # A régiófelszínek KONTEXTUST adnak, nem ők a főszereplők: alacsony
-        # átlátszatlansággal nem nyomják el a vékony axonvonalakat.
-        'region_opacity': 0.13,
-        'axon_width': 3,
-        'region_palette': [
-            '#0284C7',  # kék
-            '#EA580C',  # narancs
-            '#8B5CF6',  # lila
-            '#0D9488',  # türkiz
-            '#D97706',  # borostyán
-            '#EC4899',  # rózsaszín
-            '#16A34A',  # zöld
-            '#D946EF',  # fukszia
-        ],
+        # átlátszatlansággal nem nyomják el az axonvonalakat.
+        'region_opacity': 0.14,
+        # Sok sejt saját színe (OKLCH): két váltakozó világosság, a sötét háttérhez
+        'spread_lightness': (0.68, 0.82),
+        'spread_chroma': 0.15,
+        'region_palette': ['#3987e5', '#d95926', '#199e70', '#c98500',
+                           '#d55181', '#008300', '#9085e9', '#e66767'],
     },
     'light': {
         'label': 'Light (matches the app background)',
         'paper_bg': '#FAF9F6',
         'scene_bg': '#FAF9F6',
-        'grid': '#DDDDD5',
-        'axis_text': '#5E5A4A',
-        'soma': '#111111',
-        'axon_default': '#B4B0A4',
-        'brain_outline': '#6E6A5E',
+        'grid': '#E1E0D9',
+        'axis_text': '#52514E',
+        'soma': '#0B0B0B',
+        'axon_default': '#76746C',
+        'neutral': '#898781',
+        'soma_region': '#52514E',
+        'brain_outline': '#52514E',
         'brain_outline_opacity': 0.05,
-        'legend_bg': 'rgba(255,255,255,0.85)',
-        'legend_border': '#CFD6BC',
+        'legend_bg': 'rgba(252,252,251,0.9)',
+        'legend_border': '#C3C2B7',
         'region_opacity': 0.18,
-        'axon_width': 3,
-        'region_palette': [
-            '#EA580C',  # narancs
-            '#1D4ED8',  # kék
-            '#A16207',  # barna
-            '#0D9488',  # türkiz
-            '#BE123C',  # bordó
-            '#7C3AED',  # lila
-            '#4D7C0F',  # olíva
-            '#C026D3',  # fukszia
-        ],
+        'spread_lightness': (0.48, 0.62),
+        'spread_chroma': 0.15,
+        'region_palette': ['#2a78d6', '#eb6834', '#1baf7a', '#eda100',
+                           '#e87ba4', '#008300', '#4a3aa7', '#e34948'],
     },
 }
 DEFAULT_VIZ_THEME = 'dark'

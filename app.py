@@ -1,30 +1,32 @@
 # APP.PY - Streamlit Application Entry Point
 import concurrent.futures
+import time
 
 import pandas as pd
 import streamlit as st
 
 from config import (
     BASE_DATA_DIR, DEFAULT_TARGET_REGIONS, DEFAULT_FILTER, BRAINSTEM_MOTOR_ID,
-    VIZ_THEMES, DEFAULT_VIZ_THEME, LATERALITY_MODES, DEFAULT_LATERALITY,
+    REGION_DEFAULT_FILTER_OVERRIDES, VIZ_THEMES, DEFAULT_VIZ_THEME, LATERALITY_MODES, DEFAULT_LATERALITY,
     DATABASE_METADATA_PATH, CURATION_PATH, CURATION_LABELS, DEFAULT_EXCLUDED_LABELS,
+    VIZ_DEFAULT_LINE_WIDTH, VIZ_DEFAULT_HEIGHT,
 )
 from core.cell_info import (
-    load_database_metadata, load_curation, save_curation, set_curation_label,
+    load_database_metadata, load_curation, save_curation, set_curation_label, corrected_soma_index,
     parse_cell_list, filter_cells, attach_cell_info, cell_key, soma_layer, layer_mismatch,
 )
 from core.loader import (
     load_atlas, load_dictionary, load_swc, region_name_map,
     get_all_swc_files, build_region_search_options,
     load_soma_index, build_soma_index, soma_index_exists,
-    filter_swc_by_soma_region, build_region_descendants
+    filter_swc_by_soma_region, build_region_descendants, overlapping_region_pairs,
 )
 from core.analysis import (
     run_analysis, apply_filter, results_to_dataframe, FilterCriteria, RegionResult,
     build_cortical_summary, build_laterality_summary, LATERALITY_CLASS_LABELS,
     category_slugs, build_soma_distribution_summary
 )
-from core.visualization import build_3d_plot, build_3d_plot_multi
+from core.visualization import build_3d_plot, build_3d_plot_multi, PLOTLY_CONFIG, CELL_COLOR_MODES
 from ui_assets import setup_css, NEURON_MARK, section_header
 
 st.set_page_config(
@@ -57,6 +59,20 @@ def _curation():
     return load_curation(CURATION_PATH)
 
 
+@st.cache_data(show_spinner="Correcting soma layers...")
+def _corrected_soma_index(_names_by_lower: dict):
+    """A soma index réteg-korrigált változata (a keresőhöz); újraszámolódik, ha az index vagy a kuráció változik."""
+    return corrected_soma_index(load_soma_index(), _database_metadata(), _curation(), _names_by_lower)
+
+
+def _overlap_message(pairs: list[tuple], names: dict) -> str:
+    text = "; ".join(f"**{names.get(a, a)}** and **{names.get(b, b)}**" for a, b in pairs)
+    hint = (" Use *Thalamus excluding the reticular nucleus (TRN)* instead of *Thalamus* next to the TRN."
+            if any({a, b} & {549} for a, b in pairs) else "")
+    return (f"Overlapping regions: {text}. The same endpoints count for both, so NOT rules and the "
+            f"exclusive ('only') categories are misleading.{hint}")
+
+
 def _cell_info_block(result) -> None:
     """Az adatbázis és a kézi ellenőrzés információi egy sejtről."""
     c1, c2, c3 = st.columns(3)
@@ -81,13 +97,16 @@ def _curation_editor(cell_name: str, result) -> None:
         options = ["(none)"] + list(CURATION_LABELS)
         current = result.curation_label if result.curation_label in CURATION_LABELS else "(none)"
         key = cell_key(cell_name) or cell_name
+        saved = _curation()
+        current_note = saved.at[key, 'note'] if key in saved.index else ""
         label = st.selectbox("Verdict", options, index=options.index(current), key=f"verdict_{key}",
                              format_func=lambda k: CURATION_LABELS.get(k, k))
-        note = st.text_input("Note", key=f"verdict_note_{key}")
+        note = st.text_input("Note", value=current_note, key=f"verdict_note_{key}")
         if st.button("Save verdict", key=f"verdict_save_{key}"):
             new_label = None if label == "(none)" else label
             save_curation(set_curation_label(_curation(), key, new_label, source='app', note=note), CURATION_PATH)
             _curation.clear()
+            _corrected_soma_index.clear()
             result.curation_label = new_label
             st.success(f"Saved to `{CURATION_PATH}`. Exclusions by verdict apply from the next run.")
 
@@ -115,6 +134,37 @@ def _region_card(tr: RegionResult, crit: FilterCriteria) -> None:
 
 def _csv(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode('utf-8')
+
+
+AUTO_RENDER_MAX_CELLS = 150  # efölött a kombinált 3D jelenet csak gombnyomásra épül
+
+
+def _cached_figure(key: tuple, build):
+    """
+    A 3D ábrák memóriája a munkameneten belül: ugyanazokkal a beállításokkal nem
+    épül újra (pl. egy ítélet mentésekor vagy egy másik fülre váltáskor).
+    """
+    cache = st.session_state.setdefault('_figure_cache', {})
+    if key not in cache:
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = build()
+    return cache[key]
+
+
+def _show_figure(fig) -> None:
+    # theme=None: a saját 3D témánk teljes; a Streamlit-téma ráadásul helyben
+    # módosítaná a (gyorsítótárazott) ábrát, és minden megjelenítéskor halmozódna.
+    st.plotly_chart(fig, config=PLOTLY_CONFIG, theme=None)
+
+
+def _regions_shown_control(run_region_ids: list[int], key: str) -> list[int]:
+    """Melyik célterületek kerüljenek a 3D jelenetbe (alapból mind)."""
+    if not run_region_ids:
+        return []
+    labels = {rid: region_names.get(rid, str(rid)) for rid in run_region_ids}
+    return st.multiselect("Regions in the scene", options=run_region_ids, default=run_region_ids,
+                          format_func=labels.get, key=key)
 
 
 # GLOBAL DATA LOADING
@@ -148,6 +198,10 @@ with st.sidebar:
     selected_region_ids = [region_options[name] for name in selected_region_names]
     if not selected_region_ids:
         st.caption("No target region — the run will still produce the **Hemisphere** tab.")
+    overlaps = overlapping_region_pairs(selected_region_ids,
+                                       build_region_descendants(dictionary, selected_region_ids))
+    if overlaps:
+        st.warning(_overlap_message(overlaps, region_names), icon="⚠️")
 
     st.divider()
 
@@ -195,15 +249,20 @@ with st.sidebar:
             side_label = st.radio("Hemisphere for this region", options=list(REGION_SIDES), horizontal=True,
                                   key=f"filter_side_{region_id}")
 
-            min_ep = st.number_input("Min. endpoints", min_value=0, value=DEFAULT_FILTER['min_endpoints'],
+            defaults = {**DEFAULT_FILTER, **REGION_DEFAULT_FILTER_OVERRIDES.get(region_id, {})}
+            if region_id in REGION_DEFAULT_FILTER_OVERRIDES:
+                st.caption("Region-specific default: a genuine descending (PT) arbor has dozens of "
+                           "brain-stem endpoints; 1–4 endpoints next to the thalamus are usually registration "
+                           "leakage of L6 / IT cells.")
+            min_ep = st.number_input("Min. endpoints", min_value=0, value=defaults['min_endpoints'],
                                      step=1, key=f"filter_ep_{region_id}")
-            min_br = st.number_input("Min. branch points", min_value=0, value=DEFAULT_FILTER['min_branch_points'],
+            min_br = st.number_input("Min. branch points", min_value=0, value=defaults['min_branch_points'],
                                      step=1, key=f"filter_br_{region_id}")
             min_len = st.number_input("Min. axon length (µm)", min_value=0.0,
-                                      value=float(DEFAULT_FILTER['min_axon_length_um']), step=10.0,
+                                      value=float(defaults['min_axon_length_um']), step=10.0,
                                       key=f"filter_len_{region_id}")
             min_ep_pct = st.number_input("Min. endpoint share (%)", min_value=0.0, max_value=100.0,
-                                         value=float(DEFAULT_FILTER['min_endpoint_fraction'] * 100), step=0.5,
+                                         value=float(defaults['min_endpoint_fraction'] * 100), step=0.5,
                                          key=f"filter_eppct_{region_id}")
 
             if min_ep_pct > 0 and op == 'NOT' and int(min_br) > 0:
@@ -240,13 +299,25 @@ with st.sidebar:
 
             build_soma_index(BASE_DATA_DIR, atlas_matrix, region_names, update_progress)
             load_soma_index.clear()
+            _corrected_soma_index.clear()
             st.rerun()
+
+        correct_layers = st.toggle(
+            "Correct soma layer by projection class", value=False, key="correct_layers",
+            disabled=metadata is None and curation.empty,
+            help="A PT cell whose soma was registered into L4/L6a is treated as sitting in the L5 region of the "
+                 "same area (and a CT cell in L5 as L6a) — both in the soma search below and in the summaries. "
+                 "A manual 'Actually L5' verdict overrides the class. The atlas region is still exported "
+                 "as 'soma_region'.")
 
         filtered_swc = all_swc
         if soma_index is not None:
-            soma_search = st.text_input("Filter by soma region", placeholder="e.g. motor, thalamus...",
+            soma_search = st.text_input("Filter by soma region", placeholder="e.g. motor, layer 5...",
                                         key="soma_search")
-            filtered_swc = filter_swc_by_soma_region(all_swc, soma_index, soma_search)
+            search_index = _corrected_soma_index(names_by_lower) if correct_layers else soma_index
+            filtered_swc = filter_swc_by_soma_region(all_swc, search_index, soma_search)
+            if correct_layers and soma_search.strip():
+                st.caption("Searching the layer-corrected soma regions.")
 
         selected_classes, selected_lines = [], []
         if metadata is not None:
@@ -268,12 +339,6 @@ with st.sidebar:
                 help=f"Verdicts from `{CURATION_PATH}` ({len(curation)} cells).")
         filtered_swc = filter_cells(filtered_swc, metadata, selected_classes, selected_lines,
                                     curation, excluded_labels)
-        correct_layers = st.toggle(
-            "Correct soma layer by projection class", value=False, key="correct_layers",
-            disabled=metadata is None and curation.empty,
-            help="Summaries count a PT cell whose soma sits in L4/L6 under the L5 region of the same area "
-                 "(and a CT cell in L5 under L6a). A manual 'Actually L5' verdict overrides the class. "
-                 "The atlas region is still exported as 'soma_region'.")
 
         analysis_mode = st.radio("Analysis mode", options=["Single cell", "Batch (multiple cells)"],
                                  horizontal=True, key="analysis_mode")
@@ -319,11 +384,20 @@ with st.sidebar:
 
     show_brain_outline = st.toggle("Show brain outline", value=True, key="toggle_brain_outline")
     show_soma_region = st.toggle("Show soma region", value=True, key="toggle_soma")
-    show_other_regions = st.toggle("Show other projection regions", value=True, key="toggle_other")
+    show_other_regions = st.toggle("Show other projection regions", value=False, key="toggle_other",
+                                   help="One grey surface for every non-target region the cell projects to. "
+                                        "Off by default: for long-range cells it covers most of the brain.")
     show_only_target_regions = st.toggle("Axon-in-region view", value=False, key="toggle_exclusive")
     show_projection_points = st.toggle("Show projection points", value=True, key="toggle_points",
-                                       help="The diamond markers on endpoints and branch points.")
+                                       help="Markers on the endpoints (circles) and branch points (diamonds) "
+                                            "inside each target region, on the hemisphere the region is evaluated on.")
     camera_view = CAMERA_LABELS[st.selectbox("Camera view", options=list(CAMERA_LABELS), key="camera_view")]
+    line_width = st.slider("Axon line width", min_value=1, max_value=10, value=VIZ_DEFAULT_LINE_WIDTH,
+                           key="viz_line_width")
+    figure_height = st.slider("Figure height (px)", min_value=500, max_value=1600, value=VIZ_DEFAULT_HEIGHT,
+                              step=50, key="viz_height")
+    st.caption("In the figure legend: click an item to hide / show it, double-click to show only that one. "
+               "The camera icon saves a high-resolution PNG.")
 
 # MAIN CONTENT
 if not selected_cells:
@@ -357,6 +431,7 @@ if run_button:
         'laterality': laterality,
         'max_contra_pct': max_contra_pct,
         'correct_layers': correct_layers,
+        'id': time.time(),  # a 3D ábrák memóriájának kulcsa
     }
 
     def process_single_cell(cell_name: str, filepath: str):
@@ -400,9 +475,11 @@ if results:
     filter_was_active = (any(c.is_active() for c in criteria_used.values())
                          or run['max_contra_pct'] is not None)
     plot_options = dict(show_soma_region=show_soma_region, show_other_regions=show_other_regions,
-                        show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
+                        show_only_target_regions=show_only_target_regions,
                         theme=viz_theme, show_brain_outline=show_brain_outline,
-                        show_projection_points=show_projection_points, view=camera_view)
+                        show_projection_points=show_projection_points, view=camera_view,
+                        line_width=line_width, height=figure_height)
+    plot_key = (run.get('id', 0),) + tuple(sorted(plot_options.items()))
 
     if run_region_ids != selected_region_ids:
         st.warning("The target regions changed since the last run — the results below still show the "
@@ -413,7 +490,10 @@ if results:
     # SINGLE CELL VIEW
     if len(results) == 1:
         cell_name, result = results[0]
-        tab_data, tab_3d = st.tabs(["Analytics & Data", "Interactive 3D Viewer"])
+        # on_change="rerun": csak a kiválasztott fül tartalma fut le (a 3D ábra nem
+        # épül fel a háttérben minden kattintásnál)
+        tab_data, tab_3d = st.tabs(["Analytics & Data", "Interactive 3D Viewer"], key="single_tabs",
+                                   on_change="rerun")
 
         with tab_data:
             if result.passes_filter is True:
@@ -461,16 +541,21 @@ if results:
                 st.dataframe(other_df, hide_index=True)
 
         with tab_3d:
-            st.info("**Tip:** Use the left mouse button to rotate, the right button to pan, "
-                    "and the scroll wheel to zoom.")
-            with st.spinner("Building interactive 3D plot..."):
-                fig = build_3d_plot(result, atlas_matrix, cell_name, **plot_options)
-            st.plotly_chart(fig)
+            if tab_3d.open:
+                shown = _regions_shown_control(run_region_ids, "regions_shown_single")
+                st.caption("Left mouse: rotate · right mouse: pan · scroll: zoom.")
+                with st.spinner("Building interactive 3D plot..."):
+                    fig = _cached_figure(
+                        plot_key + ('single', cell_name, tuple(shown)),
+                        lambda: build_3d_plot(result, atlas_matrix, cell_name, region_descendants=descendants_used,
+                                              regions_shown=shown, **plot_options))
+                _show_figure(fig)
 
     # BATCH VIEW
     else:
         tab_stats, tab_hemi, tab_summary, tab_inspector, tab_3d_multi = st.tabs(
-            ["Population Statistics", "Hemisphere", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"])
+            ["Population Statistics", "Hemisphere", "Cortical Summary", "Single Cell Inspector", "Combined 3D View"],
+            key="batch_tabs", on_change="rerun")
 
         with tab_stats:
             c1, c2, c3, c4 = st.columns(4)
@@ -573,6 +658,11 @@ if results:
                      "contralateral projectors or thalamus-heavy L6 cells).")
             summary_results = [(n, r) for n, r in results if r.passes_filter] if only_passing else results
 
+            summary_overlaps = overlapping_region_pairs([base_id] + numerator_ids if base_id else numerator_ids,
+                                                        descendants_used)
+            if summary_overlaps:
+                st.warning(_overlap_message(summary_overlaps, region_names), icon="⚠️")
+
             if not numerator_ids:
                 st.info("Add at least one more target region besides the base to build the summary.")
             else:
@@ -613,37 +703,70 @@ if results:
                                            file_name=f"bs_{safe}_{tag}.csv", mime="text/csv", key=f"dl_cat_{safe}")
 
         with tab_inspector:
-            st.markdown("Select a single cell from the processed population to view detailed metrics and its 3D scene.")
-            results_by_name = dict(results)
-            inspect_name = st.selectbox("Select cell to inspect", options=list(results_by_name.keys()),
-                                        label_visibility="collapsed")
-            if inspect_name:
-                inspect_result = results_by_name[inspect_name]
-                _cell_info_block(inspect_result)
-                _curation_editor(inspect_name, inspect_result)
-                for tr in inspect_result.target_results:
-                    _region_card(tr, criteria_used.get(tr.region_id, FilterCriteria()))
+            if tab_inspector.open:
+                st.markdown("Select a single cell from the processed population to view detailed metrics "
+                            "and its 3D scene.")
+                results_by_name = dict(results)
+                inspect_name = st.selectbox("Select cell to inspect", options=list(results_by_name.keys()),
+                                            label_visibility="collapsed")
+                if inspect_name:
+                    inspect_result = results_by_name[inspect_name]
+                    _cell_info_block(inspect_result)
+                    _curation_editor(inspect_name, inspect_result)
+                    for tr in inspect_result.target_results:
+                        _region_card(tr, criteria_used.get(tr.region_id, FilterCriteria()))
 
-                with st.spinner(f"Building 3D plot for {inspect_name}..."):
-                    st.plotly_chart(build_3d_plot(inspect_result, atlas_matrix, inspect_name, **plot_options))
+                    shown = _regions_shown_control(run_region_ids, "regions_shown_inspector")
+                    with st.spinner(f"Building 3D plot for {inspect_name}..."):
+                        fig = _cached_figure(
+                            plot_key + ('single', inspect_name, tuple(shown)),
+                            lambda: build_3d_plot(inspect_result, atlas_matrix, inspect_name,
+                                                  region_descendants=descendants_used, regions_shown=shown,
+                                                  **plot_options))
+                    _show_figure(fig)
 
         with tab_3d_multi:
-            st.caption("Joint rendering of all processed cells. Each cell gets its own colour for easy distinction.")
-            show_only_valid = st.toggle("Show only passing cells", value=True)
+            if tab_3d_multi.open:
+                st.caption("Joint rendering of the processed cells. Use the legend (or the lists below) "
+                           "to hide and show cells and regions; hover an axon to see which cell it belongs to.")
+                col_valid, col_colour, col_alpha = st.columns(3)
+                show_only_valid = col_valid.toggle("Show only passing cells", value=True, key="multi_only_valid")
+                color_by = col_colour.selectbox("Colour cells by", options=list(CELL_COLOR_MODES),
+                                                format_func=CELL_COLOR_MODES.get, key="multi_color_by")
+                line_opacity = col_alpha.slider(
+                    "Line opacity", min_value=0.1, max_value=1.0, value=1.0, step=0.05, key="multi_opacity",
+                    help="With many cells, partly transparent lines show where axons accumulate.")
 
-            def _is_shown(r) -> bool:
-                if not show_only_valid:
-                    return True
-                if filter_was_active:
-                    return bool(r.passes_filter)
-                return any(tr.projects_here for tr in r.target_results)
+                def _is_shown(r) -> bool:
+                    if not show_only_valid:
+                        return True
+                    if filter_was_active:
+                        return bool(r.passes_filter)
+                    return any(tr.projects_here for tr in r.target_results)
 
-            combined_results = [(n, r) for n, r in results if _is_shown(r)]
-            if not combined_results:
-                st.warning("No cells match the current criteria for 3D rendering.")
-            elif st.button(f"Generate Combined Scene ({len(combined_results)} cells)", type="primary"):
-                with st.spinner(f"Rendering {len(combined_results)} cells together..."):
-                    st.plotly_chart(build_3d_plot_multi(
-                        combined_results, atlas_matrix, run_region_ids, show_target_regions=True,
-                        show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
-                        theme=viz_theme, show_brain_outline=show_brain_outline, view=camera_view))
+                eligible = [(n, r) for n, r in results if _is_shown(r)]
+                eligible_names = [n for n, _ in eligible]
+                chosen = st.multiselect("Cells in the scene", options=eligible_names, default=eligible_names,
+                                        key=f"multi_cells_{run.get('id', 0)}_{show_only_valid}")
+                shown = _regions_shown_control(run_region_ids, "regions_shown_multi")
+                combined_results = [(n, r) for n, r in eligible if n in set(chosen)]
+
+                multi_key = (run.get('id', 0), 'multi', tuple(chosen), color_by, tuple(shown), viz_theme,
+                             show_brain_outline, show_only_target_regions, camera_view, line_width, figure_height,
+                             line_opacity)
+                already_built = multi_key in st.session_state.get('_figure_cache', {})
+                if not combined_results:
+                    st.warning("No cells selected for 3D rendering.")
+                elif (len(combined_results) <= AUTO_RENDER_MAX_CELLS or already_built
+                      or st.button(f"Generate Combined Scene ({len(combined_results)} cells)", type="primary")):
+                    with st.spinner(f"Rendering {len(combined_results)} cells together..."):
+                        fig = _cached_figure(multi_key, lambda: build_3d_plot_multi(
+                            combined_results, atlas_matrix, run_region_ids, show_target_regions=True,
+                            show_only_target_regions=show_only_target_regions, region_descendants=descendants_used,
+                            theme=viz_theme, show_brain_outline=show_brain_outline, view=camera_view,
+                            color_by=color_by, regions_shown=shown, line_width=line_width,
+                            height=figure_height, line_opacity=line_opacity))
+                    if color_by == 'cell' and len(combined_results) > 8:
+                        st.caption("Past 8 cells the colours separate the trees but cannot reliably identify "
+                                   "a cell — hover an axon or a soma to see which cell it is.")
+                    _show_figure(fig)

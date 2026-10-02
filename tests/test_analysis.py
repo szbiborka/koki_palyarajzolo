@@ -430,7 +430,7 @@ def test_export_columns_unique_for_similar_region_names():
 
 def test_3d_view_understands_parent_regions():
     """A szülő régió felszíne, markerei és az 'Axon-in-region' nézet is működjön."""
-    from core.visualization import _region_mask, _expand_ids, _build_axon_trace, _allowed_regions
+    from core.visualization import _region_mask, _expand_ids, build_3d_plot
 
     atlas = _atlas_with_bs()
     dic = _dictionary_with_hierarchy()
@@ -450,11 +450,10 @@ def test_3d_view_understands_parent_regions():
     assert len(co['proj_idx'][np.isin(pr[co['proj_idx']], match)]) == 3
 
     # "Axon-in-region" nézet ne tüntesse el a szülő régió axonjait
-    allowed = _allowed_regions([BS_PARENT], desc, res.soma_region_id)
-    cmap = {rid: '#1f77b4' for rid in _expand_ids(BS_PARENT, desc)}
-    traces = _build_axon_trace(co['x'], co['y'], co['z'], co['child_rows'], co['parent_rows'],
-                               co['is_axon'], pr, cmap, 2, allowed)
-    assert sum(len(t.x) for t in traces) > 0
+    fig = build_3d_plot(res, atlas, 'cell', show_only_target_regions=True, region_descendants=desc,
+                        show_brain_outline=False, show_soma_region=False)
+    axon = [t for t in fig.data if t.type == 'scatter3d' and t.mode == 'lines']
+    assert sum(np.isfinite(np.asarray(t.x, dtype=float)).sum() for t in axon) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -818,3 +817,154 @@ def test_camera_views_set_an_orthographic_camera():
             assert fig.layout.scene.camera.eye.x is None
         else:
             assert fig.layout.scene.camera.projection.type == 'orthographic'
+
+
+# ---------------------------------------------------------------------------
+# ÁTNÉZÉS UTÁNI JAVÍTÁSOK
+# ---------------------------------------------------------------------------
+def test_all_zero_thresholds_mean_axon_presence():
+    """Csupa 0 küszöb = 'bármilyen axon jelenléte', nem 'mindig igaz'."""
+    any_axon = FilterCriteria(min_endpoints=0, min_branch_points=0)
+    assert any_axon.describe() == "any axon presence"
+    assert any_axon.is_projection(0, 0, 0.0, 0.0) is False
+    assert any_axon.is_projection(0, 0, 12.5, 0.0) is True
+    assert any_axon.is_projection(1, 0, 0.0, 0.0) is True
+
+
+def test_voxel_lookup_uses_the_ccf_floor_convention():
+    """Az i. voxel a [25*i, 25*(i+1)) um tartomány (Allen CCF), nem a kerekítés."""
+    from core.analysis import to_voxel
+    x = np.array([0.0, 12.4, 12.6, 24.9, 25.0])
+    vx, _, _ = to_voxel(x, x, x, (10, 10, 10))
+    assert list(vx) == [0, 0, 0, 0, 1]
+
+
+def test_midline_band_is_undecided():
+    """A középvonal +-MIDLINE_BAND_UM sávjában lévő pont oldala 0 (sem ipszi, sem kontra)."""
+    from core.analysis import side_of
+    from config import MIDLINE_BAND_UM
+    shape = (10, 10, 40)                      # középvonal: 20 voxel = 500 um
+    z = np.array([500 - MIDLINE_BAND_UM - 1, 500 - MIDLINE_BAND_UM, 500, 500 + MIDLINE_BAND_UM,
+                  500 + MIDLINE_BAND_UM + 1])
+    assert list(side_of(z, shape)) == [-1, 0, 0, 0, 1]
+
+
+def test_thalamus_without_trn_and_overlap_detection():
+    """A TRN a Thalamus része: a virtuális 'TH-noRT' nem tartalmazza, és az átfedés felismerhető."""
+    from config import THALAMUS_NO_TRN_ID
+    from core.loader import overlapping_region_pairs
+
+    dic = pd.DataFrame({
+        "id": [549, 856, 262, 1022],
+        "safe_name": ["Thalamus", "Thalamus polymodal", "Reticular nucleus of the thalamus", "GPe"],
+        "structure_id_path": ["/997/549/", "/997/549/856/", "/997/549/856/262/", "/997/1022/"],
+    })
+    desc = build_region_descendants(dic, [549, 262, THALAMUS_NO_TRN_ID, 1022])
+    assert 262 in desc[549]
+    assert 262 not in desc[THALAMUS_NO_TRN_ID] and 856 in desc[THALAMUS_NO_TRN_ID]
+
+    assert overlapping_region_pairs([549, 262, 1022], desc) == [(549, 262)]
+    assert overlapping_region_pairs([THALAMUS_NO_TRN_ID, 262, 1022], desc) == []
+
+    # Egy csak a TRN-ben arborizáló sejt: a teljes thalamus 'vetítésnek' látja, a TH-noRT nem.
+    atlas = np.zeros((10, 4, 4), dtype=int)
+    atlas[5, :, :] = 262
+    cell = _swc([(1, 1, 1, -1), (2, 2, 5, 1), (3, 2, 5, 2), (4, 2, 5, 2)])
+    names = region_name_map(dic)
+    res = run_analysis(cell, atlas, names, [549, THALAMUS_NO_TRN_ID], desc)
+    by = {t.region_id: t for t in res.target_results}
+    assert by[549].projects_here is True
+    assert by[THALAMUS_NO_TRN_ID].projects_here is False
+
+
+def test_brainstem_default_requires_a_real_arbor():
+    """A leszálló agytörzs alapértelmezett kritériuma >= 5 végpont (a határ menti átszivárgás ellen)."""
+    from config import REGION_DEFAULT_FILTER_OVERRIDES
+    assert REGION_DEFAULT_FILTER_OVERRIDES[BRAINSTEM_MOTOR_ID]['min_endpoints'] == 5
+
+
+# ---------------------------------------------------------------------------
+# MEGJELENÍTŐ
+# ---------------------------------------------------------------------------
+def _chain_coords(n_nodes):
+    """Egyenes axon n csomóponttal + egy kétágú végződés; a csomópontok sorrendje DFS."""
+    rows = [(1, 1, 0, -1)] + [(i, 2, i - 1, i - 1) for i in range(2, n_nodes + 1)]
+    rows += [(n_nodes + 1, 2, n_nodes, n_nodes), (n_nodes + 2, 2, n_nodes, n_nodes)]
+    data = [[nid, t, x * 10.0, 25, 25, 1.0, pid] for nid, t, x, pid in rows]
+    cell = pd.DataFrame(data, columns=["id", "type", "x", "y", "z", "radius", "pid"])
+    return run_analysis(cell, np.zeros((40, 4, 4), dtype=int), {}, []).coords
+
+
+def test_simplified_axon_stays_connected():
+    """Az egyszerűsítés után is minden megtartott csomópont össze van kötve a gyökérrel, és az
+    elágazások / végpontok megmaradnak."""
+    from core.visualization import _drawn_edges
+    co = _chain_coords(30)
+    full_child, full_parent = _drawn_edges(co, 1)
+    child, parent = _drawn_edges(co, 5)
+    assert len(child) < len(full_child)
+    # folytonosság: minden él szülője vagy a gyökér, vagy maga is egy él gyereke
+    drawn = set(child.tolist())
+    root = int(np.flatnonzero(co['is_axon'] == False)[0])  # noqa: E712 - a soma
+    assert all(int(p) in drawn or int(p) == root for p in parent)
+    # az elágazás és a két végpont megvan
+    n_children = np.bincount(co['parent_rows'], minlength=len(co['x']))
+    assert set(np.flatnonzero(n_children != 1)) - {root} <= drawn
+
+
+def test_projection_points_follow_the_region_side():
+    """Ipsi módban a túloldali vetítési pontok nem jelennek meg."""
+    from core.visualization import build_3d_plot
+    atlas = _mirrored_atlas()
+    names = {CORTEX: "Cortex", GPE: "GPe"}
+    cell = _bilateral_cell()   # 2 ipszi + 2 kontra GPe végpont
+
+    def gpe_points(side):
+        res = run_analysis(cell, atlas, names, [GPE], criteria_per_region={GPE: FilterCriteria(side=side)})
+        fig = build_3d_plot(res, atlas, 'c', show_brain_outline=False, show_soma_region=False,
+                            show_other_regions=False)
+        pts = [t for t in fig.data if t.type == 'scatter3d' and t.mode == 'markers' and 'endpoints' in (t.name or '')]
+        return sum(len(t.x) for t in pts)
+
+    assert gpe_points('both') > gpe_points('ipsi') > 0
+
+
+def test_every_cell_gets_its_own_colour():
+    """'Each cell' módban minden sejt saját színt kap: 8-ig a validált palettából, fölötte szétosztott árnyalatból."""
+    from core.visualization import _cell_groups, get_theme
+    th = get_theme('dark')
+
+    def cells(n):
+        return [(f'{i:03d}.swc', CellAnalysisResult(1, 'M', (0, 0, 0), [], [], 0.0)) for i in range(n)]
+
+    few = [c for _, _, c in _cell_groups(cells(5), 'cell', th)]
+    assert few == th['region_palette'][:5]
+
+    many = _cell_groups(cells(40), 'cell', th)
+    colours = [c for _, _, c in many]
+    assert len(set(colours)) == 40 and th['neutral'] not in colours
+    assert all(len(c) == 7 and c.startswith('#') for c in colours)
+    assert [label for _, label, _ in many][:2] == ['000.swc', '001.swc']   # a jelmagyarázatban a sejt neve
+
+
+def test_group_colour_modes_fold_and_stay_fixed():
+    """Soma-régió szerint 7 csoport fölött 'Other'; osztály szerint rögzített színek."""
+    from core.visualization import _cell_groups, get_theme
+    th = get_theme('dark')
+    results = [(f'{i}.swc', CellAnalysisResult(1, f'Region {i}', (0, 0, 0), [], [], 0.0)) for i in range(10)]
+    groups = _cell_groups(results, 'soma', th)
+    assert sum(1 for _, _, c in groups if c == th['neutral']) == 3
+    assert groups[-1][1] == 'Other (3 cells)'
+
+    pt_only = [('a.swc', CellAnalysisResult(1, 'M', (0, 0, 0), [], [], 0.0, projection_class='PT'))]
+    it_only = [('b.swc', CellAnalysisResult(1, 'M', (0, 0, 0), [], [], 0.0, projection_class='IT'))]
+    assert _cell_groups(pt_only, 'class', th)[0][2] != _cell_groups(it_only, 'class', th)[0][2]
+
+
+def test_oklch_conversion():
+    from core.visualization import _oklch_to_hex
+    assert _oklch_to_hex(1.0, 0.0, 0.0) == '#ffffff'
+    assert _oklch_to_hex(0.0, 0.0, 0.0) == '#000000'
+    # a referencia-paletta kékje (#3987e5) OKLCH-ban kb. L 0.62, C 0.16, h 256
+    r, g, b = (int(_oklch_to_hex(0.62, 0.16, 256)[i:i + 2], 16) for i in (1, 3, 5))
+    assert abs(r - 0x39) < 20 and abs(g - 0x87) < 20 and abs(b - 0xe5) < 20
